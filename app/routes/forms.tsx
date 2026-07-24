@@ -7,6 +7,7 @@ import {
   SidebarProvider,
 } from "#/components/ui/sidebar"
 import { requireAuth } from "~/lib/require-auth.server"
+import { createDefaultFormPolicy } from "~/lib/form-config/defaults"
 
 export async function loader({ context, request }: Route.LoaderArgs) {
   const database = context.cloudflare.env.DB
@@ -65,12 +66,28 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 
   const createdAt = Date.now()
+  const policy = createDefaultFormPolicy()
 
   await database
     .prepare(
-      "INSERT INTO forms (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)"
+      `INSERT INTO forms (
+        id,
+        name,
+        created_at,
+        updated_at,
+        config_json,
+        config_schema_version,
+        config_revision
+      ) VALUES (?, ?, ?, ?, json(?), ?, 1)`
     )
-    .bind(id, name, createdAt, createdAt)
+    .bind(
+      id,
+      name,
+      createdAt,
+      createdAt,
+      JSON.stringify(policy),
+      policy.schemaVersion
+    )
     .run()
 
   return redirect(`/forms/${id}/submissions`)

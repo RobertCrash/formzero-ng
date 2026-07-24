@@ -22,6 +22,7 @@ export async function action({ context, request }: Route.ActionArgs) {
     const notification_email_password = formData.get("notification_email_password") as string
     const smtp_host = formData.get("smtp_host") as string
     const smtp_port = formData.get("smtp_port") as string
+    const smtp_secure = formData.get("smtp_secure") === "1"
 
     // Validate required fields
     if (!notification_email || !notification_email_password || !smtp_host || !smtp_port) {
@@ -37,6 +38,7 @@ export async function action({ context, request }: Route.ActionArgs) {
       notification_email_password,
       smtp_host,
       smtp_port: parseInt(smtp_port, 10),
+      smtp_secure,
     })
 
     if (result.success) {

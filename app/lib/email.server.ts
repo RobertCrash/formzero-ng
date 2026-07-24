@@ -13,6 +13,7 @@ export async function sendTestEmail(
     const transporter = nodemailer.createTransport({
       host: config.smtp_host,
       port: config.smtp_port,
+      secure: config.smtp_secure,
       auth: {
         user: config.notification_email,
         pass: config.notification_email_password,
@@ -21,7 +22,9 @@ export async function sendTestEmail(
 
     // Send test email
     const info = await transporter.sendMail({
-      from: config.notification_email,
+      from: config.from_name
+        ? `"${config.from_name}" <${config.from_address ?? config.notification_email}>`
+        : config.from_address ?? config.notification_email,
       to: config.notification_email,
       subject: "FormZero - Test Email",
       text: "This is a test email from FormZero. Your SMTP settings are working correctly!",
@@ -110,6 +113,7 @@ export async function sendSubmissionNotification(
     const transporter = nodemailer.createTransport({
       host: config.smtp_host,
       port: config.smtp_port,
+      secure: config.smtp_secure,
       auth: {
         user: config.notification_email,
         pass: config.notification_email_password,
@@ -117,8 +121,16 @@ export async function sendSubmissionNotification(
     })
 
     // Format the submission data for email display
-    const submissionHtml = formatSubmissionData(submission.data)
-    const submissionText = formatSubmissionDataText(submission.data)
+    const submissionHtml = formatSubmissionData(
+      submission.data,
+      submission.fields,
+      submission.files
+    )
+    const submissionText = formatSubmissionDataText(
+      submission.data,
+      submission.fields,
+      submission.files
+    )
 
     // Format timestamp
     const timestamp = new Date(submission.createdAt).toLocaleString('en-US', {
@@ -128,9 +140,13 @@ export async function sendSubmissionNotification(
 
     // Send email
     await transporter.sendMail({
-      from: config.notification_email,
-      to: config.notification_email,
-      subject: `New Submission for "${submission.formName}"`,
+      from: config.from_name
+        ? `"${config.from_name}" <${config.from_address ?? config.notification_email}>`
+        : config.from_address ?? config.notification_email,
+      to: submission.recipients ?? [config.notification_email],
+      replyTo: submission.replyTo,
+      subject:
+        submission.subject ?? `New Submission for "${submission.formName}"`,
       text: `
 FormZero - New Form Submission
 
@@ -242,25 +258,57 @@ This email was automatically sent by FormZero
 /**
  * Formats submission data as HTML table
  */
-function formatSubmissionData(data: Record<string, any>): string {
-  const entries = Object.entries(data)
+function orderedEntries(
+  data: Record<string, any>,
+  fields?: SubmissionEmailData["fields"]
+) {
+  if (!fields?.length) {
+    return Object.entries(data).map(([key, value]) => ({
+      key,
+      label: key.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()),
+      value,
+    }))
+  }
 
-  if (entries.length === 0) {
+  const configured = fields
+    .filter((field) => Object.hasOwn(data, field.name))
+    .map((field) => ({
+      key: field.name,
+      label:
+        field.label ??
+        field.name.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()),
+      value: data[field.name],
+    }))
+  const known = new Set(fields.map((field) => field.name))
+  const extra = Object.entries(data)
+    .filter(([key]) => !known.has(key))
+    .map(([key, value]) => ({
+      key,
+      label: key.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()),
+      value,
+    }))
+  return [...configured, ...extra]
+}
+
+function formatSubmissionData(
+  data: Record<string, any>,
+  fields?: SubmissionEmailData["fields"],
+  files?: SubmissionEmailData["files"]
+): string {
+  const entries = orderedEntries(data, fields)
+
+  if (entries.length === 0 && !files?.length) {
     return '<p style="color: #8e8e8e; font-style: italic;">No data submitted</p>'
   }
 
   const rows = entries
-    .map(([key, value]) => {
-      const displayKey = key
-        .replace(/_/g, ' ')
-        .replace(/\b\w/g, (l) => l.toUpperCase())
-
-      let displayValue = formatValue(value)
+    .map(({ label, value }) => {
+      const displayValue = formatValue(value)
 
       return `
         <tr>
           <td style="padding: 12px 16px; border-bottom: 1px solid #ebebeb; color: #8e8e8e; font-size: 14px; font-weight: 500; vertical-align: top; width: 35%;">
-            ${escapeHtml(displayKey)}
+            ${escapeHtml(label)}
           </td>
           <td style="padding: 12px 16px; border-bottom: 1px solid #ebebeb; color: #252525; font-size: 14px; vertical-align: top;">
             ${displayValue}
@@ -270,9 +318,25 @@ function formatSubmissionData(data: Record<string, any>): string {
     })
     .join('')
 
+  const fileRows = (files ?? [])
+    .map(
+      (file) => `
+        <tr>
+          <td style="padding: 12px 16px; border-bottom: 1px solid #ebebeb; color: #8e8e8e; font-size: 14px; font-weight: 500; vertical-align: top; width: 35%;">
+            Attachment
+          </td>
+          <td style="padding: 12px 16px; border-bottom: 1px solid #ebebeb; font-size: 14px;">
+            <a href="${escapeHtml(file.downloadUrl)}">${escapeHtml(file.name)}</a>
+            (${escapeHtml(file.mimeType)}, ${file.sizeBytes} bytes)
+          </td>
+        </tr>
+      `
+    )
+    .join("")
+
   return `
     <table width="100%" cellpadding="0" cellspacing="0" style="border: 1px solid #ebebeb; border-radius: 6px; overflow: hidden;">
-      ${rows}
+      ${rows}${fileRows}
     </table>
   `
 }
@@ -280,22 +344,29 @@ function formatSubmissionData(data: Record<string, any>): string {
 /**
  * Formats submission data as plain text
  */
-function formatSubmissionDataText(data: Record<string, any>): string {
-  const entries = Object.entries(data)
+function formatSubmissionDataText(
+  data: Record<string, any>,
+  fields?: SubmissionEmailData["fields"],
+  files?: SubmissionEmailData["files"]
+): string {
+  const entries = orderedEntries(data, fields)
 
-  if (entries.length === 0) {
+  if (entries.length === 0 && !files?.length) {
     return 'No data submitted'
   }
 
-  return entries
-    .map(([key, value]) => {
-      const displayKey = key
-        .replace(/_/g, ' ')
-        .replace(/\b\w/g, (l) => l.toUpperCase())
-
-      return `${displayKey}: ${formatValueText(value)}`
+  const values = entries
+    .map(({ label, value }) => {
+      return `${label}: ${formatValueText(value)}`
     })
     .join('\n')
+  const attachments = (files ?? [])
+    .map(
+      (file) =>
+        `Attachment: ${file.name} (${file.mimeType}, ${file.sizeBytes} bytes) ${file.downloadUrl}`
+    )
+    .join("\n")
+  return [values, attachments].filter(Boolean).join("\n")
 }
 
 /**

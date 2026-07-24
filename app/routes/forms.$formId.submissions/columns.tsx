@@ -4,6 +4,7 @@ import { useFetcher } from "react-router"
 import { ArrowUpDown, Trash2, Loader2 } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
 import { Button } from "#/components/ui/button"
+import type { FieldRule } from "~/lib/form-config/types"
 import {
   Tooltip,
   TooltipContent,
@@ -86,7 +87,7 @@ function DeleteSubmissionButton({ submission }: { submission: Submission }) {
   )
 }
 
-export function createColumns(submissions: Submission[]): ColumnDef<Submission>[] {
+export function createColumns(fields: FieldRule[]): ColumnDef<Submission>[] {
   // Time column comes first
   const timeColumn: ColumnDef<Submission> = {
     accessorKey: "created_at",
@@ -128,21 +129,11 @@ export function createColumns(submissions: Submission[]): ColumnDef<Submission>[
     },
   }
 
-  // Extract all unique field names from submission data
-  const fieldNames = new Set<string>()
-  submissions.forEach((submission) => {
-    Object.keys(submission.data).forEach((key) => fieldNames.add(key))
-  })
-
-  // Sort field names: email first if exists, then alphabetically
-  const sortedFields = Array.from(fieldNames).sort((a, b) => {
-    if (a === "email") return -1
-    if (b === "email") return 1
-    return a.localeCompare(b)
-  })
-
   // Create columns for each field
-  const dataColumns: ColumnDef<Submission>[] = sortedFields.map((fieldName) => {
+  const dataColumns: ColumnDef<Submission>[] = fields.map((field) => {
+    const fieldName = field.name
+    const label =
+      field.label ?? fieldName.charAt(0).toUpperCase() + fieldName.slice(1)
     // Make email column sortable
     if (fieldName === "email") {
       return {
@@ -154,7 +145,7 @@ export function createColumns(submissions: Submission[]): ColumnDef<Submission>[
               variant="ghost"
               onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
             >
-              Email
+              {label}
               <ArrowUpDown className="ml-2 h-4 w-4" />
             </Button>
           )
@@ -170,7 +161,7 @@ export function createColumns(submissions: Submission[]): ColumnDef<Submission>[
     return {
       id: fieldName,
       accessorFn: (row) => row.data[fieldName],
-      header: fieldName.charAt(0).toUpperCase() + fieldName.slice(1),
+      header: label,
       cell: ({ row }) => {
         const value = row.original.data[fieldName]
         return <div className="text-sm">{value?.toString() || ""}</div>

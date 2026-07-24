@@ -1,352 +1,165 @@
 import { useState } from "react"
-import { useParams } from "react-router"
+import { useLoaderData } from "react-router"
 import type { Route } from "./+types/forms.$formId.integration"
-import { Copy, Check, HelpCircle } from "lucide-react"
+import { Copy, Check } from "lucide-react"
 import { Highlight, themes } from "prism-react-renderer"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card"
+import { requireAuth } from "~/lib/require-auth.server"
+import { loadFormWithPolicy } from "~/lib/form-config/load-form-policy.server"
+import type { FieldRule } from "~/lib/form-config/types"
+import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs"
 import { Button } from "~/components/ui/button"
-import { Input } from "~/components/ui/input"
-import { Label } from "~/components/ui/label"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "~/components/ui/tooltip"
 
-export const meta: Route.MetaFunction = () => {
-  return [
-    { title: "Integration | FormZero" },
-    { name: "description", content: "Integrate your form with HTML, JavaScript, or React" },
-  ];
-};
+export async function loader({ request, params, context }: Route.LoaderArgs) {
+  await requireAuth(request, context.cloudflare.env.DB)
+  const form = await loadFormWithPolicy(context.cloudflare.env.DB, params.formId)
+  if (!form) throw new Response("Form not found", { status: 404 })
+  return { form }
+}
+
+function htmlField(field: FieldRule) {
+  const required = field.required ? " required" : ""
+  const minLength =
+    field.minLength !== undefined ? ` minlength="${field.minLength}"` : ""
+  const maxLength =
+    field.maxLength !== undefined ? ` maxlength="${field.maxLength}"` : ""
+  const min = field.minimum !== undefined ? ` min="${field.minimum}"` : ""
+  const max = field.maximum !== undefined ? ` max="${field.maximum}"` : ""
+  const label = field.label ?? field.name
+  if (field.type === "select") {
+    return `  <label>${label}
+    <select name="${field.name}"${required}>
+${(field.options ?? []).map((option) => `      <option value="${option}">${option}</option>`).join("\n")}
+    </select>
+  </label>`
+  }
+  const type =
+    field.type === "datetime"
+      ? "datetime-local"
+      : field.type === "string" || field.type === "string-array"
+        ? "text"
+        : field.type === "files"
+          ? "file"
+          : field.type
+  const multiple =
+    field.type === "files" || field.type === "string-array" ? " multiple" : ""
+  return `  <label>${label}
+    <input type="${type}" name="${field.name}"${required}${minLength}${maxLength}${min}${max}${multiple} />
+  </label>`
+}
+
+function CodeBlock({ code, language }: { code: string; language: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <div className="relative">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="absolute right-2 top-2 z-10"
+        onClick={async () => {
+          await navigator.clipboard.writeText(code)
+          setCopied(true)
+          setTimeout(() => setCopied(false), 2_000)
+        }}
+      >
+        {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
+      </Button>
+      <Highlight theme={themes.vsDark} code={code} language={language}>
+        {({ className, style, tokens, getLineProps, getTokenProps }) => (
+          <pre
+            className={className}
+            style={{ ...style, padding: "1rem", overflowX: "auto", borderRadius: "0.375rem" }}
+          >
+            {tokens.map((line, index) => (
+              <div key={index} {...getLineProps({ line })}>
+                {line.map((token, tokenIndex) => (
+                  <span key={tokenIndex} {...getTokenProps({ token })} />
+                ))}
+              </div>
+            ))}
+          </pre>
+        )}
+      </Highlight>
+    </div>
+  )
+}
 
 export default function IntegrationPage() {
-  const params = useParams()
-  const formId = params.formId
-  const [copiedEndpoint, setCopiedEndpoint] = useState(false)
-  const [copiedCode, setCopiedCode] = useState(false)
-  const [redirectUrl, setRedirectUrl] = useState("")
-
-  // Use browser location to construct endpoint
-  const formEndpoint = typeof window !== "undefined"
-    ? `${window.location.origin}/api/forms/${formId}/submissions`
-    : `/api/forms/${formId}/submissions`
-
-  const htmlAction = redirectUrl.trim()
-    ? `${formEndpoint}?redirect=${encodeURIComponent(redirectUrl.trim())}`
-    : formEndpoint
-
-  const handleCopyEndpoint = async () => {
-    await navigator.clipboard.writeText(formEndpoint)
-    setCopiedEndpoint(true)
-    setTimeout(() => setCopiedEndpoint(false), 2000)
-  }
-
-  const handleCopyCode = async (code: string) => {
-    await navigator.clipboard.writeText(code)
-    setCopiedCode(true)
-    setTimeout(() => setCopiedCode(false), 2000)
-  }
-
-  const htmlExample = `<form action="${htmlAction}" method="POST">
-  <input type="text" name="name" placeholder="Your Name" required />
-  <input type="email" name="email" placeholder="Your Email" required />
-  <textarea name="message" placeholder="Your Message"></textarea>
+  const { form } = useLoaderData<typeof loader>()
+  const baseUrl = typeof window === "undefined" ? "" : window.location.origin
+  const endpoint = `${baseUrl}/api/forms/${form.id}/submissions`
+  const multipart =
+    form.policy.uploads.enabled && form.policy.uploads.mode === "inline"
+      ? ' enctype="multipart/form-data"'
+      : ""
+  const honeypot = form.policy.security.honeypot.enabled
+    ? `  <input type="text" name="${form.policy.security.honeypot.fieldName}" tabindex="-1" autocomplete="off" hidden />
+  <input type="hidden" name="${form.policy.security.honeypot.startedAtFieldName ?? "_fz_started_at"}" value="" data-formzero-started-at />`
+    : ""
+  const turnstile = form.policy.security.captcha.enabled
+    ? `  <div class="cf-turnstile" data-sitekey="${form.policy.security.captcha.siteKey}"${form.policy.security.captcha.expectedAction ? ` data-action="${form.policy.security.captcha.expectedAction}"` : ""}></div>`
+    : ""
+  const html = `${form.policy.security.captcha.enabled ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>\n' : ""}<form action="${endpoint}" method="POST"${multipart}>
+${form.policy.fields.map(htmlField).join("\n")}
+${honeypot}
+${turnstile}
   <button type="submit">Submit</button>
-</form>`
-
-  const jsExample = `fetch('${formEndpoint}', {
+</form>${form.policy.security.honeypot.enabled ? `\n<script>document.querySelector('[data-formzero-started-at]').value = Date.now()</script>` : ""}`
+  const javascript = `const response = await fetch('${endpoint}', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json'
+  },
   body: JSON.stringify({
-    name: 'John Doe',
-    email: 'john@example.com',
-    message: 'Hello!'
+${form.policy.fields
+  .filter((field) => field.type !== "file" && field.type !== "files")
+  .map((field) => `    ${JSON.stringify(field.name)}: ''`)
+  .join(",\n")}
   })
 })
-  .then(response => response.json())
-  .then(data => console.log('Success:', data))
-  .catch(error => console.error('Error:', error))`
 
-  const reactExample = `import { useState } from 'react'
-
-function ContactForm() {
-  const [formData, setFormData] = useState({
-    name: '',
-    email: '',
-    message: ''
-  })
-  const [status, setStatus] = useState('')
-
-  const handleSubmit = async (e) => {
-    e.preventDefault()
-    setStatus('sending')
-
-    try {
-      const response = await fetch('${formEndpoint}', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
-      })
-
-      if (response.ok) {
-        setStatus('success')
-        setFormData({ name: '', email: '', message: '' })
-      } else {
-        setStatus('error')
-      }
-    } catch (error) {
-      setStatus('error')
-    }
-  }
+const result = await response.json()
+if (!response.ok) {
+  console.error(result.error.code, result.error.fields, result.error.requestId)
+  throw new Error(result.error.message)
+}
+console.log('Submission:', result.id)${
+    form.policy.uploads.enabled && form.policy.uploads.mode === "direct"
+      ? `\n\n// Direct uploads: POST metadata to /api/forms/${form.id}/uploads,\n// PUT each file to the returned uploadUrl, complete the session,\n// then include uploadTokens as _fz_upload_tokens in the submission.`
+      : ""
+  }`
+  const publicConfig = `const config = await fetch(
+  '${baseUrl}/api/forms/${form.id}/public-config',
+  { headers: { Accept: 'application/json' } }
+).then(response => response.json())`
 
   return (
-    <form onSubmit={handleSubmit}>
-      <input
-        type="text"
-        placeholder="Your Name"
-        value={formData.name}
-        onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-        required
-      />
-      <input
-        type="email"
-        placeholder="Your Email"
-        value={formData.email}
-        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-        required
-      />
-      <textarea
-        placeholder="Your Message"
-        value={formData.message}
-        onChange={(e) => setFormData({ ...formData, message: e.target.value })}
-      />
-      <button type="submit" disabled={status === 'sending'}>
-        {status === 'sending' ? 'Sending...' : 'Submit'}
-      </button>
-      {status === 'success' && <p>Message sent successfully!</p>}
-      {status === 'error' && <p>Error sending message. Please try again.</p>}
-    </form>
-  )
-}`
-
-  return (
-    <div className="flex flex-1 flex-col gap-3">
+    <div className="space-y-4">
       <Card>
-        <CardHeader>
-          <CardTitle>Endpoint</CardTitle>
-          <CardDescription>
-            Use this as your HTML form <code className="rounded bg-muted px-1 py-0.5 text-xs">action</code> URL or just send JSON to it.
-          </CardDescription>
-        </CardHeader>
+        <CardHeader><CardTitle>Endpoint</CardTitle></CardHeader>
         <CardContent>
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-            <code className="flex-1 rounded-md bg-muted px-3 py-2 text-xs font-mono break-all">
-              {formEndpoint}
-            </code>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleCopyEndpoint}
-              className="shrink-0 w-full sm:w-auto sm:px-3"
-            >
-              {copiedEndpoint ? (
-                <>
-                  <Check className="h-3.5 w-3.5" />
-                  <span className="sm:hidden ml-2">Copied!</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="h-3.5 w-3.5" />
-                  <span className="sm:hidden ml-2">Copy Endpoint</span>
-                </>
-              )}
-            </Button>
-          </div>
+          <code className="break-all rounded bg-muted px-3 py-2 text-sm">
+            {endpoint}
+          </code>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Allowed origins:{" "}
+            {form.policy.security.allowedOrigins.join(", ") || "legacy unrestricted"}
+          </p>
         </CardContent>
       </Card>
-
       <Card>
-        <CardHeader>
-          <CardTitle>Integration Examples</CardTitle>
-          <CardDescription>
-            Choose your preferred method to submit data to your form.
-          </CardDescription>
-        </CardHeader>
+        <CardHeader><CardTitle>Policy-aware examples</CardTitle></CardHeader>
         <CardContent>
-          <Tabs defaultValue="html" className="w-full">
+          <Tabs defaultValue="html">
             <TabsList>
               <TabsTrigger value="html">HTML</TabsTrigger>
               <TabsTrigger value="javascript">JavaScript</TabsTrigger>
-              <TabsTrigger value="react">React</TabsTrigger>
+              <TabsTrigger value="config">Public config</TabsTrigger>
             </TabsList>
-
-            <TabsContent value="html" className="mt-3 space-y-3">
-              <div className="space-y-2">
-                <div className="flex items-center gap-1.5">
-                  <Label htmlFor="redirect-url">Redirect URL (optional)</Label>
-                  <TooltipProvider delayDuration={150}>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button
-                          type="button"
-                          aria-label="How this works"
-                          className="text-muted-foreground hover:text-foreground"
-                        >
-                          <HelpCircle className="h-3.5 w-3.5" />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-xs">
-                        <p>
-                          We append <code>?redirect=</code> to the form&apos;s action URL in the snippet below. It&apos;s a copy-and-paste helper - nothing is saved on your form.
-                        </p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                </div>
-                <Input
-                  id="redirect-url"
-                  type="url"
-                  value={redirectUrl}
-                  onChange={(e) => setRedirectUrl(e.target.value)}
-                  placeholder="https://yoursite.com/thanks.html"
-                />
-                <p className="text-xs text-muted-foreground">
-                  After submission, users are redirected here. Leave empty to send them back to the page they came from.
-                </p>
-              </div>
-              <div className="relative">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleCopyCode(htmlExample)}
-                  className="absolute top-2 right-2 z-10 h-7 px-2 text-xs"
-                >
-                  {copiedCode ? (
-                    <Check className="h-3 w-3" />
-                  ) : (
-                    <Copy className="h-3 w-3" />
-                  )}
-                </Button>
-                <Highlight
-                  theme={themes.vsDark}
-                  code={htmlExample}
-                  language="markup"
-                >
-                  {({ className, style, tokens, getLineProps, getTokenProps }) => (
-                    <pre
-                      className={className}
-                      style={{
-                        ...style,
-                        margin: 0,
-                        borderRadius: "0.375rem",
-                        fontSize: "0.75rem",
-                        padding: "0.75rem",
-                        overflowX: "auto",
-                      }}
-                    >
-                      {tokens.map((line, i) => (
-                        <div key={i} {...getLineProps({ line })}>
-                          {line.map((token, key) => (
-                            <span key={key} {...getTokenProps({ token })} />
-                          ))}
-                        </div>
-                      ))}
-                    </pre>
-                  )}
-                </Highlight>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="javascript" className="mt-3">
-              <div className="relative">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleCopyCode(jsExample)}
-                  className="absolute top-2 right-2 z-10 h-7 px-2 text-xs"
-                >
-                  {copiedCode ? (
-                    <Check className="h-3 w-3" />
-                  ) : (
-                    <Copy className="h-3 w-3" />
-                  )}
-                </Button>
-                <Highlight
-                  theme={themes.vsDark}
-                  code={jsExample}
-                  language="javascript"
-                >
-                  {({ className, style, tokens, getLineProps, getTokenProps }) => (
-                    <pre
-                      className={className}
-                      style={{
-                        ...style,
-                        margin: 0,
-                        borderRadius: "0.375rem",
-                        fontSize: "0.75rem",
-                        padding: "0.75rem",
-                        overflowX: "auto",
-                      }}
-                    >
-                      {tokens.map((line, i) => (
-                        <div key={i} {...getLineProps({ line })}>
-                          {line.map((token, key) => (
-                            <span key={key} {...getTokenProps({ token })} />
-                          ))}
-                        </div>
-                      ))}
-                    </pre>
-                  )}
-                </Highlight>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="react" className="mt-3">
-              <div className="relative">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleCopyCode(reactExample)}
-                  className="absolute top-2 right-2 z-10 h-7 px-2 text-xs"
-                >
-                  {copiedCode ? (
-                    <Check className="h-3 w-3" />
-                  ) : (
-                    <Copy className="h-3 w-3" />
-                  )}
-                </Button>
-                <Highlight
-                  theme={themes.vsDark}
-                  code={reactExample}
-                  language="jsx"
-                >
-                  {({ className, style, tokens, getLineProps, getTokenProps }) => (
-                    <pre
-                      className={className}
-                      style={{
-                        ...style,
-                        margin: 0,
-                        borderRadius: "0.375rem",
-                        fontSize: "0.75rem",
-                        padding: "0.75rem",
-                        overflowX: "auto",
-                      }}
-                    >
-                      {tokens.map((line, i) => (
-                        <div key={i} {...getLineProps({ line })}>
-                          {line.map((token, key) => (
-                            <span key={key} {...getTokenProps({ token })} />
-                          ))}
-                        </div>
-                      ))}
-                    </pre>
-                  )}
-                </Highlight>
-              </div>
-            </TabsContent>
+            <TabsContent value="html"><CodeBlock code={html} language="markup" /></TabsContent>
+            <TabsContent value="javascript"><CodeBlock code={javascript} language="javascript" /></TabsContent>
+            <TabsContent value="config"><CodeBlock code={publicConfig} language="javascript" /></TabsContent>
           </Tabs>
         </CardContent>
       </Card>

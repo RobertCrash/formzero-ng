@@ -1,6 +1,7 @@
 import type { Route } from "./+types/forms.$formId.submissions.$submissionId"
 import { data } from "react-router"
 import { requireAuth } from "~/lib/require-auth.server"
+import { deleteSubmissionWithFiles } from "~/lib/uploads/delete-submission.server"
 
 export async function action({ request, params, context }: Route.ActionArgs) {
   const database = context.cloudflare.env.DB
@@ -17,15 +18,26 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   const { formId, submissionId } = params
 
   try {
-    const result = await database
-      .prepare("DELETE FROM submissions WHERE id = ? AND form_id = ?")
-      .bind(submissionId, formId)
-      .run()
+    const result = await deleteSubmissionWithFiles({
+      db: database,
+      bucket: context.cloudflare.env.UPLOADS,
+      formId,
+      submissionId,
+    })
 
-    if (result.meta.changes === 0) {
+    if (!result.found) {
       return data(
         { success: false, error: "Submission not found" },
         { status: 404 }
+      )
+    }
+    if (!result.deleted) {
+      return data(
+        {
+          success: false,
+          error: "Deletion is pending because one or more files could not be removed.",
+        },
+        { status: 202 }
       )
     }
 

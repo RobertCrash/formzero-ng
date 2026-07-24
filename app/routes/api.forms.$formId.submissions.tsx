@@ -1,182 +1,216 @@
 import type { Route } from "./+types/api.forms.$formId.submissions";
-import { data, redirect } from "react-router";
-import { sendSubmissionNotification } from "~/lib/email.server";
-import type { EmailConfig } from "#/types/settings";
+import { data } from "react-router";
+import { loadFormWithPolicy } from "~/lib/form-config/load-form-policy.server";
+import { applyRateLimit } from "~/lib/submissions/apply-rate-limit.server";
+import { buildSubmissionContext } from "~/lib/submissions/build-context.server";
+import { createSubmissionWithJobs } from "~/lib/submissions/create-submission.server";
+import { SubmissionError } from "~/lib/submissions/errors";
+import { extractInternalFields } from "~/lib/submissions/normalize-fields";
+import { parseSubmissionRequest } from "~/lib/submissions/parse-request.server";
+import {
+  submissionFailure,
+  submissionSuccess,
+} from "~/lib/submissions/response.server";
+import {
+  resolveCorsHeaders,
+  validateOrigin,
+} from "~/lib/submissions/validate-origin";
+import { validateHoneypot } from "~/lib/submissions/validate-honeypot";
+import { validateAndNormalizeFields } from "~/lib/submissions/validate-fields";
+import { verifyTurnstile } from "~/lib/submissions/verify-turnstile.server";
+import { uploadInlineFiles } from "~/lib/uploads/inline-upload.server";
+import { prepareDirectUploads } from "~/lib/uploads/complete-upload.server";
+import { publishDeliveryJobs } from "~/lib/delivery/publish-jobs.server";
 
-// CORS headers to allow submissions from any domain
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Accept",
-  "Access-Control-Max-Age": "86400",
+type SubmissionEnv = Env & {
+  UPLOADS?: R2Bucket;
+  DELIVERY_QUEUE?: Queue<{ jobId: string }>;
+  TURNSTILE_SECRET?: string;
+  FORMZERO_ENCRYPTION_KEY?: string;
+  IP_HASH_SECRET?: string;
 };
 
-// Handle preflight OPTIONS requests
-export async function loader({ request }: Route.LoaderArgs) {
+export async function loader({ request, params, context }: Route.LoaderArgs) {
+  const form = await loadFormWithPolicy(
+    context.cloudflare.env.DB,
+    params.formId
+  );
+  const headers = form
+    ? resolveCorsHeaders(request, form.policy.security)
+    : new Headers({ Vary: "Origin" });
+
   if (request.method === "OPTIONS") {
     return new Response(null, {
-      status: 204,
-      headers: corsHeaders,
+      status: form ? 204 : 404,
+      headers,
     });
   }
 
-  // For non-OPTIONS requests to this endpoint, return method not allowed
   return data(
-    { error: "Method not allowed" },
-    { status: 405, headers: corsHeaders }
+    {
+      success: false,
+      error: { code: "method_not_allowed", message: "Method not allowed" },
+    },
+    { status: 405, headers }
   );
 }
 
 export async function action({ request, params, context }: Route.ActionArgs) {
-  const { formId } = params;
-  const db = context.cloudflare.env.DB;
-
-  // Determine if this is a JSON request (used throughout)
-  const contentType = request.headers.get("content-type") || "";
-  const acceptHeader = request.headers.get("accept") || "";
-  const isJsonRequest =
-    acceptHeader.includes("application/json") ||
-    contentType.includes("application/json");
+  const receivedAt = Date.now();
+  const fallbackRequestId = crypto.randomUUID();
+  const env = context.cloudflare.env as SubmissionEnv;
+  let cors = new Headers({ Vary: "Origin" });
+  let form: Awaited<ReturnType<typeof loadFormWithPolicy>> = null;
+  let requestId = fallbackRequestId;
 
   try {
-    // Check if form exists
-    const form = await db
-      .prepare("SELECT id FROM forms WHERE id = ?")
-      .bind(formId)
-      .first();
-
+    form = await loadFormWithPolicy(env.DB, params.formId);
     if (!form) {
-      if (isJsonRequest) {
-        return data(
-          { success: false, error: "Form not found" },
-          { status: 404, headers: corsHeaders }
-        );
-      }
-      return redirect("/error?error=form_not_found");
+      throw new SubmissionError("form_not_found", "Form not found.");
     }
 
-    // Parse request body based on content type
-    let submissionData: Record<string, any>;
+    cors = resolveCorsHeaders(request, form.policy.security);
+    const submissionContext = await buildSubmissionContext({
+      request,
+      env,
+      policy: form.policy,
+      receivedAt,
+    });
+    requestId = submissionContext.core.requestId;
+    const origin = validateOrigin(request, form.policy.security);
+    submissionContext.core.origin = origin;
 
-    if (contentType.includes("application/json")) {
-      submissionData = await request.json();
-    } else if (
-      contentType.includes("application/x-www-form-urlencoded") ||
-      contentType.includes("multipart/form-data")
-    ) {
-      const formData = await request.formData();
-      submissionData = Object.fromEntries(formData);
-    } else {
-      if (isJsonRequest) {
-        return data(
-          { success: false, error: "Unsupported content type" },
-          { status: 415, headers: corsHeaders }
-        );
-      }
-      return redirect("/error?error=unsupported_content_type");
+    const rateLimit = await applyRateLimit({
+      formId: form.id,
+      sourceIpHash: submissionContext.rateLimitIpHash,
+      config: form.policy.security.rateLimit,
+      env,
+    });
+    const parsed = await parseSubmissionRequest({ request, policy: form.policy });
+    const { fields: rawFields, internal } = extractInternalFields(
+      parsed,
+      form.policy.security.honeypot.fieldName,
+      form.policy.security.honeypot.startedAtFieldName
+    );
+    const honeypot = validateHoneypot({
+      internal,
+      config: form.policy.security.honeypot,
+      receivedAt,
+    });
+
+    if (honeypot.discard) {
+      return submissionSuccess({
+        request,
+        requestId: submissionContext.core.requestId,
+        cors,
+        redirects: form.policy.redirects,
+      });
     }
 
-    // Generate submission ID and timestamp
-    const submissionId = crypto.randomUUID();
-    const createdAt = Date.now();
+    const captcha = await verifyTurnstile({
+      token: internal.turnstileToken,
+      request,
+      config: form.policy.security.captcha,
+      env,
+      sourceIp: submissionContext.observedIp,
+    });
+    const directUploads = await prepareDirectUploads({
+      db: env.DB,
+      bucket: env.UPLOADS,
+      form,
+      tokens: internal.uploadTokens,
+    });
+    const attachedFileCounts = directUploads.files.reduce<Record<string, number>>(
+      (counts, file) => {
+        counts[file.fieldName] = (counts[file.fieldName] ?? 0) + 1;
+        return counts;
+      },
+      {}
+    );
+    let fields;
+    let uploaded;
+    try {
+      fields = validateAndNormalizeFields({
+        values: rawFields,
+        files: parsed.files,
+        attachedFileCounts,
+        rules: form.policy.fields,
+        rejectUnknownFields: form.policy.request.rejectUnknownFields,
+      });
+      uploaded = await uploadInlineFiles({
+        bucket: env.UPLOADS,
+        form,
+        filesByField: parsed.files,
+      });
+    } catch (error) {
+      await directUploads.cleanup();
+      throw error;
+    }
+    const preparedFiles = [...uploaded.files, ...directUploads.files];
 
-    // Store submission in database
-    await db
-      .prepare(
-        "INSERT INTO submissions (id, form_id, data, created_at) VALUES (?, ?, ?, ?)"
-      )
-      .bind(submissionId, formId, JSON.stringify(submissionData), createdAt)
-      .run();
+    const processingDurationMs = Date.now() - receivedAt;
+    const metadata = {
+      ...submissionContext.metadata,
+      security: {
+        originAccepted: true,
+        captcha: captcha ?? undefined,
+        honeypot: {
+          enabled: form.policy.security.honeypot.enabled,
+          triggered: honeypot.triggered,
+          minimumTimePassed: honeypot.minimumTimePassed,
+        },
+        rateLimit,
+      },
+      payload: {
+        encoding: parsed.encoding,
+        payloadBytes: parsed.payloadBytes,
+        fieldCount: Object.keys(fields).length,
+        fileCount: preparedFiles.length,
+        totalFileBytes: uploaded.totalBytes + directUploads.totalBytes,
+      },
+      processing: { processingDurationMs },
+    };
 
-    // Send email notification asynchronously (don't await to avoid blocking response)
-    // This runs in the background after the response is sent
+    let submission;
+    try {
+      submission = await createSubmissionWithJobs({
+        db: env.DB,
+        form,
+        fields,
+        files: preparedFiles,
+        submissionContext: submissionContext.core,
+        metadata,
+      });
+    } catch (error) {
+      await uploaded.cleanup();
+      await directUploads.cleanup();
+      throw error;
+    }
+    await directUploads.finalize();
+
     context.cloudflare.ctx.waitUntil(
-      (async () => {
-        try {
-          // Fetch global settings
-          const globalSettings = await db
-            .prepare(
-              "SELECT notification_email, notification_email_password, smtp_host, smtp_port FROM settings WHERE id = 'global'"
-            )
-            .first<{
-              notification_email: string | null
-              notification_email_password: string | null
-              smtp_host: string | null
-              smtp_port: number | null
-            }>();
-
-          // Check if email notifications are configured
-          if (
-            globalSettings?.notification_email &&
-            globalSettings?.notification_email_password &&
-            globalSettings?.smtp_host &&
-            globalSettings?.smtp_port
-          ) {
-            // Fetch form name for email
-            const formData = await db
-              .prepare("SELECT name FROM forms WHERE id = ?")
-              .bind(formId)
-              .first<{ name: string }>();
-
-            if (formData) {
-              // Type-safe email config (null checks already done above)
-              const emailConfig: EmailConfig = {
-                notification_email: globalSettings.notification_email,
-                notification_email_password: globalSettings.notification_email_password,
-                smtp_host: globalSettings.smtp_host,
-                smtp_port: globalSettings.smtp_port,
-              };
-
-              await sendSubmissionNotification(emailConfig, {
-                id: submissionId,
-                formId: formId,
-                formName: formData.name,
-                data: submissionData,
-                createdAt: createdAt,
-              });
-            }
-          }
-        } catch (error) {
-          // Log error but don't fail the request
-          console.error("Failed to send email notification:", error);
-        }
-      })()
+      publishDeliveryJobs({
+        db: env.DB,
+        queue: env.DELIVERY_QUEUE,
+        jobs: submission.deliveryJobs,
+      })
     );
 
-    if (isJsonRequest) {
-      // Return JSON response
-      return data(
-        { success: true, id: submissionId },
-        { status: 201, headers: corsHeaders }
-      );
-    } else {
-      // Handle redirect for HTML form submissions
-      const url = new URL(request.url);
-      const redirectParam = url.searchParams.get("redirect");
-      const referer = request.headers.get("referer");
-
-      let redirectUrl: string;
-
-      if (redirectParam) {
-        redirectUrl = redirectParam;
-      } else if (referer) {
-        redirectUrl = referer;
-      } else {
-        redirectUrl = "/success";
-      }
-
-      return redirect(redirectUrl, 303);
-    }
+    return submissionSuccess({
+      request,
+      submissionId: submission.id,
+      requestId: submission.requestId,
+      cors,
+      redirects: form.policy.redirects,
+    });
   } catch (error) {
     console.error("Error processing form submission:", error);
-
-    if (isJsonRequest) {
-      return data(
-        { success: false, error: "Failed to process submission" },
-        { status: 500, headers: corsHeaders }
-      );
-    } else {
-      return redirect("/error?error=internal_error");
-    }
+    return submissionFailure({
+      request,
+      error,
+      requestId,
+      cors,
+      redirects: form?.policy.redirects,
+    });
   }
 }

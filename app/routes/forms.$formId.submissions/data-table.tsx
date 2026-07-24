@@ -24,12 +24,16 @@ interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[]
   data: TData[]
   headerAction?: React.ReactNode
+  footerAction?: React.ReactNode
+  totalCount?: number
 }
 
 export function DataTable<TData, TValue>({
   columns,
   data,
   headerAction,
+  footerAction,
+  totalCount,
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = React.useState<SortingState>([
     { id: "created_at", desc: true }, // Default sort by created_at descending
@@ -122,9 +126,10 @@ export function DataTable<TData, TValue>({
       </div>
       <div className="text-muted-foreground text-sm">
         {filteredData.length === data.length
-          ? `${data.length} total submission(s)`
+          ? `${data.length} shown${totalCount !== undefined ? ` of ${totalCount}` : ""}`
           : `${filteredData.length} of ${data.length} submission(s)`}
       </div>
+      {footerAction && <div className="flex justify-end">{footerAction}</div>}
     </div>
   )
 }

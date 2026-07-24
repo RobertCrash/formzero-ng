@@ -19,31 +19,31 @@ const SMTP_CONFIGS: Record<string, { host: string; port: number; secure: boolean
   "gmail.com": {
     host: "smtp.gmail.com",
     port: 587,
-    secure: true,
+    secure: false,
     hint: "For Gmail, use an App Password instead of your regular password. Go to Google Account → Security → 2-Step Verification → App passwords."
   },
   "outlook.com": {
     host: "smtp-mail.outlook.com",
     port: 587,
-    secure: true,
+    secure: false,
     hint: "For Outlook, use your regular Microsoft account password or an App Password if you have 2FA enabled."
   },
   "hotmail.com": {
     host: "smtp-mail.outlook.com",
     port: 587,
-    secure: true,
+    secure: false,
     hint: "For Hotmail, use your regular Microsoft account password or an App Password if you have 2FA enabled."
   },
   "yahoo.com": {
     host: "smtp.mail.yahoo.com",
     port: 587,
-    secure: true,
+    secure: false,
     hint: "For Yahoo, generate an App Password at: Account Info → Account Security → Generate app password."
   },
   "icloud.com": {
     host: "smtp.mail.me.com",
     port: 587,
-    secure: true,
+    secure: false,
     hint: "For iCloud, use an App-Specific Password. Go to appleid.apple.com → Sign-In and Security → App-Specific Passwords."
   },
 }
@@ -66,9 +66,10 @@ export function SettingsDialog({ open, onOpenChange, settings }: SettingsDialogP
 
   // Initialize with user's email if settings don't exist yet
   const [email, setEmail] = useState(settings?.notification_email || "")
-  const [password, setPassword] = useState(settings?.notification_email_password || "")
+  const [password, setPassword] = useState("")
   const [smtpHost, setSmtpHost] = useState(settings?.smtp_host || "")
   const [smtpPort, setSmtpPort] = useState(settings?.smtp_port?.toString() || "")
+  const [smtpSecure, setSmtpSecure] = useState(settings?.smtp_secure === 1)
 
   // Initialize emailDomain and smtpConfig from settings on mount
   const initialEmail = settings?.notification_email || ""
@@ -84,9 +85,10 @@ export function SettingsDialog({ open, onOpenChange, settings }: SettingsDialogP
   useEffect(() => {
     if (settings) {
       setEmail(settings.notification_email || "")
-      setPassword(settings.notification_email_password || "")
+      setPassword("")
       setSmtpHost(settings.smtp_host || "")
       setSmtpPort(settings.smtp_port?.toString() || "")
+      setSmtpSecure(settings.smtp_secure === 1)
     }
   }, [settings])
 
@@ -108,6 +110,7 @@ export function SettingsDialog({ open, onOpenChange, settings }: SettingsDialogP
         setSmtpConfig(config)
         setSmtpHost(config.host)
         setSmtpPort(config.port.toString())
+        setSmtpSecure(config.secure)
       } else {
         setSmtpConfig(null)
         if (!settings?.smtp_host) {
@@ -138,7 +141,7 @@ export function SettingsDialog({ open, onOpenChange, settings }: SettingsDialogP
   useEffect(() => {
     setTestPassed(false)
     setTestResultValid(false)
-  }, [email, password, smtpHost, smtpPort])
+  }, [email, password, smtpHost, smtpPort, smtpSecure])
 
   useEffect(() => {
     if (clearFetcher.state === "idle" && clearFetcher.data?.success) {
@@ -161,6 +164,7 @@ export function SettingsDialog({ open, onOpenChange, settings }: SettingsDialogP
     formData.append("notification_email_password", password)
     formData.append("smtp_host", smtpHost)
     formData.append("smtp_port", smtpPort)
+    formData.append("smtp_secure", smtpSecure ? "1" : "0")
 
     testFetcher.submit(formData, {
       method: "post",
@@ -192,6 +196,7 @@ export function SettingsDialog({ open, onOpenChange, settings }: SettingsDialogP
           <CardContent className="space-y-4">
             <fetcher.Form method="post" action="/settings/notifications">
               <div className="space-y-4">
+                <input type="hidden" name="smtp_secure" value={smtpSecure ? "1" : "0"} />
                 <div className="space-y-2">
                   <Label htmlFor="email" className="flex items-center gap-2">
                     <Mail className="h-4 w-4" />
@@ -222,10 +227,14 @@ export function SettingsDialog({ open, onOpenChange, settings }: SettingsDialogP
                         id="password"
                         name="notification_email_password"
                         type="password"
-                        placeholder="Enter your SMTP password"
+                        placeholder={
+                          settings?.has_password
+                            ? "Leave blank to keep the saved password"
+                            : "Enter your SMTP password"
+                        }
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        required
+                        required={!settings?.has_password}
                       />
                       <p className="text-sm text-muted-foreground">
                         {smtpConfig ? smtpConfig.hint : "Use your email password or app-specific password"}
@@ -278,6 +287,15 @@ export function SettingsDialog({ open, onOpenChange, settings }: SettingsDialogP
                       </>
                     )}
 
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={smtpSecure}
+                        onChange={(event) => setSmtpSecure(event.target.checked)}
+                      />
+                      Use implicit TLS (usually port 465)
+                    </label>
+
                     <div className="pt-4 space-y-3">
                       {testFetcher.data?.error && testResultValid && (
                         <p className="text-sm text-destructive">
@@ -309,7 +327,13 @@ export function SettingsDialog({ open, onOpenChange, settings }: SettingsDialogP
                                     isSuccess={isSaved}
                                     loadingText="Saving..."
                                     successText="Saved!"
-                                    disabled={!testPassed}
+                                    disabled={
+                                      (!testPassed && Boolean(password)) ||
+                                      !email ||
+                                      (!password && !settings?.has_password) ||
+                                      !smtpHost ||
+                                      !smtpPort
+                                    }
                                     className="w-full sm:w-auto"
                                   >
                                     Save Settings
