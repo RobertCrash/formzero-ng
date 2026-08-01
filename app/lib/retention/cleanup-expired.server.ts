@@ -1,3 +1,5 @@
+import { deleteSubmissionWithFiles } from "../uploads/delete-submission.server"
+
 export async function redactExpiredIps(db: D1Database, now = Date.now()) {
   const result = await db
     .prepare(`
@@ -14,22 +16,30 @@ export async function redactExpiredIps(db: D1Database, now = Date.now()) {
 
 export async function deleteExpiredSubmissions(
   db: D1Database,
+  bucket?: R2Bucket,
   now = Date.now()
 ) {
-  const result = await db
+  const expired = await db
     .prepare(`
-      DELETE FROM submissions
+      SELECT id, form_id
+      FROM submissions
       WHERE delete_after IS NOT NULL
         AND delete_after <= ?
         AND status != 'pending_delete'
-        AND NOT EXISTS (
-          SELECT 1
-          FROM submission_files
-          WHERE submission_files.submission_id = submissions.id
-            AND submission_files.status != 'deleted'
-        )
+      ORDER BY delete_after
+      LIMIT 100
     `)
     .bind(now)
-    .run()
-  return result.meta.changes
+    .all<{ id: string; form_id: string }>()
+  let deleted = 0
+  for (const submission of expired.results) {
+    const result = await deleteSubmissionWithFiles({
+      db,
+      bucket,
+      formId: submission.form_id,
+      submissionId: submission.id,
+    })
+    if (result.deleted) deleted++
+  }
+  return deleted
 }

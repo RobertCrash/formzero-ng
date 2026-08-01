@@ -16,6 +16,21 @@ export async function putSecret({
   value: string
   secretId?: string
 }) {
+  const existing = await db
+    .prepare(`
+      SELECT form_id, purpose
+      FROM form_secrets
+      WHERE id = ?
+    `)
+    .bind(secretId)
+    .first<{ form_id: string | null; purpose: string }>()
+  if (
+    existing &&
+    (existing.form_id !== formId || existing.purpose !== purpose)
+  ) {
+    throw new Error("Secret ownership or purpose does not match.")
+  }
+
   const encryptedValue = await encryptSecret(value, encryptionKey)
   const now = Date.now()
 

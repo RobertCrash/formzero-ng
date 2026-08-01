@@ -2,6 +2,7 @@ import type { FormWithPolicy } from "../form-config/types"
 import type { PreparedSubmissionFile } from "../submissions/create-submission.server"
 import { SubmissionError } from "../submissions/errors"
 import { attachedObjectKey } from "./object-key"
+import { isAllowedFileExtension } from "./validate-file"
 
 export async function prepareDirectUploads({
   db,
@@ -80,6 +81,24 @@ export async function prepareDirectUploads({
       "The direct uploads exceed the total file limit."
     )
   }
+  for (const row of rows.results) {
+    if (
+      row.size_bytes > form.policy.uploads.maxFileBytes ||
+      (form.policy.uploads.allowedMimeTypes.length > 0 &&
+        !form.policy.uploads.allowedMimeTypes.includes(
+          row.mime_type.toLowerCase()
+        )) ||
+      !isAllowedFileExtension(
+        row.original_name,
+        form.policy.uploads.allowedExtensions
+      )
+    ) {
+      throw new SubmissionError(
+        "file_validation_failed",
+        "A direct upload no longer satisfies the form upload policy."
+      )
+    }
+  }
 
   const prepared: PreparedSubmissionFile[] = []
   const oldKeys: string[] = []
@@ -126,14 +145,18 @@ export async function prepareDirectUploads({
     finalize: async () => {
       await Promise.allSettled(oldKeys.map((key) => bucket.delete(key)))
       const sessionIds = [...new Set(rows.results.map((row) => row.upload_session_id))]
-      await db
-        .prepare(`
-          UPDATE upload_sessions
-          SET status = 'attached'
-          WHERE id IN (${sessionIds.map(() => "?").join(",")})
-        `)
-        .bind(...sessionIds)
-        .run()
+      try {
+        await db
+          .prepare(`
+            UPDATE upload_sessions
+            SET status = 'attached'
+            WHERE id IN (${sessionIds.map(() => "?").join(",")})
+          `)
+          .bind(...sessionIds)
+          .run()
+      } catch (error) {
+        console.error("Failed to finalize direct-upload session cleanup:", error)
+      }
     },
   }
 }

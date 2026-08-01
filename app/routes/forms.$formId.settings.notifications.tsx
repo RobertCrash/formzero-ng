@@ -99,7 +99,7 @@ export default function NotificationSettings() {
           <input
             type="checkbox"
             checked={enabled}
-            disabled={!capabilities.backgroundDelivery}
+            disabled={!capabilities.backgroundDelivery && !enabled}
             onChange={(event) => setEnabled(event.target.checked)}
           />
           Enable per-form notifications

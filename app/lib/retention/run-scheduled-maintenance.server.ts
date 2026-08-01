@@ -62,7 +62,11 @@ export async function runScheduledMaintenance(env: MaintenanceEnv) {
       submissionId: submission.id,
     })
   }
-  const deletedSubmissions = await deleteExpiredSubmissions(env.DB, now)
+  const deletedSubmissions = await deleteExpiredSubmissions(
+    env.DB,
+    env.UPLOADS,
+    now
+  )
 
   if (env.UPLOADS) {
     const exports = await env.DB

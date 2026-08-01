@@ -1,5 +1,6 @@
 -- Seed data for testing: Past 3 weeks of submissions with 0-10 daily submissions
--- Run this with: wrangler d1 execute openform-db --local --file=./seed.sql
+-- OUTDATED:Run this with: wrangler d1 execute openform-db --local --file=./seed.sql
+-- RECENT: Run this with: npm run seed
 
 -- First, ensure we have a test form
 INSERT OR IGNORE INTO forms (id, name, created_at, updated_at)

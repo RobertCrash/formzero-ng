@@ -1,104 +1,296 @@
-<h1 align="center">FormZero</h1>
+# FormZero NG
 
-<div align="center">
-  A forever free, open-source form backend for static sites you can self-host on Cloudflare in one click
-  <br/>
-  <br/>
-  🔓 <em>No paid features.</em> 📀 <em>Own your data.</em> ⚡️ <em>Start in 3 minutes</em>
-</div>
+A self-hosted, Cloudflare-native form backend for static sites and web apps.
 
-<br/>
+FormZero NG receives HTML, JSON, and multipart submissions, then gives you an
+authenticated dashboard for validation, spam protection, delivery, uploads,
+analytics, exports, and retention. Your application and data stay in your own
+Cloudflare account.
 
-![FormZero Dashboard](media/screenshot.png)
-
-<div align="center">Perfect for <em>contact forms</em>, <em>waitlists</em>, <em>surveys</em>, <em>newsletter signups</em>, and more.</div>
-
-<br/>
-
-## Why FormZero?
-
-- **Save time** - Form backends are simple software; don't waste time building one for your static site
-- **No artificial limits** - Commercial services often restrict you to ~50 submissions/month with no data export
-- **Deploy in minutes** - As easy as signing up for a commercial service. Not a single line of code, not even YAML
-
-Use [FormZero](https://github.com/BohdanPetryshyn/formzero) for your next big thing! ⭐ Give it a star to not forget.
-
-<br/>
+> FormZero NG is a next-generation fork of [FormZero](https://github.com/BohdanPetryshyn/formzero).
+>
+> See [Acknowledgements](#acknowledgements) for upstream attribution.
 
 ## Features
 
-- **Submit HTML Forms** - Add FormZero's endpoint to your form's `action` attribute
-- **Submit JSON Data** - Send payloads via `fetch` or `XMLHttpRequest`
-- **Unlimited Forms** - Create as many as you need
-- **Unlimited Submissions** - Receive thousands per hour
-- **Analytics Dashboard** - View submission trends and stats
-- **Export CSV** - Download all submissions in one click
-- **Spam Protection** - Proof of Work CAPTCHA and honeypot fields (coming soon)
-- **Email Notifications** - Add your [Resend](http://resend.com) API key to receive notifications (coming soon)
+- **Flexible submission API** — accept HTML forms, JSON, URL-encoded data, and
+multipart requests.
+- **Policy-driven validation** — define typed fields, required values, size
+limits, accepted content types, and unknown-field handling per form.
+- **Security and spam controls** — origin allowlists, honeypots, minimum fill
+times, Cloudflare Turnstile, and configurable rate-limit profiles.
+- **Dashboard and analytics** — manage multiple forms, inspect submissions, and
+view weekly, monthly, and 30-day trends.
+- **CSV exports** — download smaller exports immediately and process larger
+exports in the background.
+- **Email notifications** — configure global SMTP credentials and per-form
+recipients, reply-to fields, and subject templates.
+- **Signed webhooks** — deliver `submission.created` events over HTTPS with
+HMAC signatures, retries, and delivery history.
+- **File uploads** — support inline multipart uploads and direct upload
+sessions backed by private Cloudflare R2 storage.
+- **Privacy and retention** — choose full, hashed, or omitted IP storage and
+configure automatic cleanup for IPs, submissions, and files.
+- **Integration helpers** — generate policy-aware HTML and JavaScript examples
+and expose a public form-configuration endpoint.
 
-<br/>
 
-## Deploy in Seconds ⚡
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/BohdanPetryshyn/formzero)
+## Architecture
 
-Deploy your own serverless form backend in seconds - as easy as signing up for a commercial service:
+The application runs as one Cloudflare Worker with `fetch`, Queue consumer, and
+scheduled handlers:
 
-1. Click the ***Deploy to Cloudflare*** button above
-2. Log in to your ***free*** Cloudflare account or create one (***no credit card required***)
-3. Follow the prompts - your instance will be running in ***3 minutes***
+- [React Router 7](https://reactrouter.com/) provides the SSR application and
+API routes.
+- [Cloudflare D1](https://developers.cloudflare.com/d1/) stores users, forms,
+policies, submissions, and delivery state.
+- [Cloudflare R2](https://developers.cloudflare.com/r2/) stores private uploads
+and large generated exports.
+- [Cloudflare Queues](https://developers.cloudflare.com/queues/) processes
+email, webhook, and export jobs.
+- [Workers Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
+provides per-form abuse controls.
+- A daily Cron Trigger handles retention, expired uploads, and delivery
+recovery.
 
-Everything fits within ***Cloudflare's free tier*** - receive up to ***100,000 submissions/day*** and store up to ***4,000,000 submissions*** for free. Upgrade later for just $5 if needed.
+The base form backend uses D1. R2, Queues, rate-limit bindings, and selected
+secrets enable the corresponding features; the dashboard reports which
+capabilities are configured.
 
-<br/>
+## Local development
 
-### How Deploy to Cloudflare Works
 
-Here's what happens when you click the button:
 
-1. Cloudflare creates a copy of this repository in your GitHub or GitLab account
-2. You provide configuration options:
-   - **Project name** (e.g. "formzero")
-   - **Database name** (e.g. "formzero")
-   - **Auth secret** (use [jwtsecrets.com](https://jwtsecrets.com) or `openssl rand -hex 16` to generate one)
-3. Cloudflare builds and deploys FormZero to your account
-4. You get a unique URL (e.g. `https://formzero.your-domain.workers.dev`) to access your dashboard
+### Prerequisites
 
-Read the [Cloudflare documentation](https://developers.cloudflare.com/workers/platform/deploy-buttons/) for more details.
+- Node.js and npm
+- A Cloudflare account for remote deployment
 
-<br/>
 
-### Update Your Deployment
 
-New features are added regularly. To pull them in, redeploy with the ***Deploy to Cloudflare*** button and connect the new Worker to your existing database — ***your forms, submissions, and endpoint URLs are all preserved***:
+### Setup
 
-1. In your Cloudflare dashboard, rename your existing Worker to `<your-project-name>-backup` — this frees the original name
-2. Delete the GitHub repository created by your previous deployment (it has the same name as the Worker)
-3. Click the ***Deploy to Cloudflare*** button above and use:
-    - The ***same project name and database name*** as before
-    - Your ***existing database*** when Cloudflare offers to connect to one
-    - A new auth secret (generate one via [jwtsecrets.com](https://jwtsecrets.com) or `openssl rand -hex 16`)
-4. Once the new Worker is live and you have confirmed everything works, delete the backup
+```bash
+git clone https://github.com/RobertCrash/formzero-ng.git
+cd formzero-ng
+cp .dev.vars.example .dev.vars
+npm install
+npm run migrate
+npm run dev
+```
 
-Websites submitting to your form endpoints keep working unchanged. You'll be signed out of the dashboard because of the new auth secret - sign back in with your existing credentials.
+Before starting the app, fill in `.dev.vars`:
 
-<br/>
+- `BETTER_AUTH_SECRET` — secret used by Better Auth.
+- `BETTER_AUTH_BASE_URL` — local application URL; the default is
+`http://localhost:5173`.
+- `FORMZERO_ENCRYPTION_KEY` — exactly 32 bytes, encoded as 64 hexadecimal
+characters or base64; encrypts SMTP, Turnstile, and webhook secrets.
+- `FORMZERO_PUBLIC_URL` — public base URL used in generated links.
+- `TURNSTILE_SECRET` — optional global Cloudflare Turnstile secret.
+- `IP_HASH_SECRET` — HMAC secret for hashed IP storage and IP-based rate
+limiting.
 
-## Tech Stack 🛠️
+Generate `BETTER_AUTH_SECRET`, `FORMZERO_ENCRYPTION_KEY`, and `IP_HASH_SECRET`
+locally with:
 
-- **[Cloudflare Workers](https://workers.cloudflare.com/)** + **[D1](https://developers.cloudflare.com/d1/)**
-- **[React Router v7](https://reactrouter.com/)**
-- **[Tailwind CSS](https://tailwindcss.com/)** + **[shadcn/ui](https://ui.shadcn.com/)**
+```bash
+openssl rand -hex 32
+```
 
-<br/>
+Alternatively, use [JWT Secrets](https://jwtsecrets.com/) to generate a
+different 256-bit hexadecimal value for `BETTER_AUTH_SECRET` and
+`IP_HASH_SECRET`. For `FORMZERO_ENCRYPTION_KEY`, use its
+[Encryption Key Generator](https://jwtsecrets.com/tools/encryption-key-generator)
+and select AES, 256 bits, and hexadecimal output.
 
-## Contributing 🤝
+Use a different generated value for each one. Obtain `TURNSTILE_SECRET` from
+Cloudflare if you enable Turnstile. `.dev.vars` is ignored by Git.
 
-Contributions are welcome - add features you need or fix bugs by opening an issue or submitting a pull request.
+The first account created becomes the instance administrator. FormZero NG is
+currently intended for a single administrator rather than teams or public
+sign-up.
 
-<br/>
+## Cloudflare deployment
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/RobertCrash/formzero-ng)
+
+The deployment flow clones this repository into your GitHub or GitLab account,
+lets you choose the Worker and resource names, provisions the D1 database, R2
+bucket, and Queues declared in `wrangler.jsonc`, applies the D1 migrations, and
+deploys the Worker.
+
+You will be prompted for the values declared in `.dev.vars.example`. Generate
+unique values for `BETTER_AUTH_SECRET`, `FORMZERO_ENCRYPTION_KEY`, and
+`IP_HASH_SECRET` with OpenSSL or the JWT Secrets alternatives described above.
+Keep them unchanged when updating the deployment. Set `BETTER_AUTH_BASE_URL`
+and `FORMZERO_PUBLIC_URL` to the deployment's public HTTPS origin.
+`TURNSTILE_SECRET` is optional because a Turnstile key can be configured per
+form later.
+
+See Cloudflare's
+[Deploy to Cloudflare documentation](https://developers.cloudflare.com/workers/platform/deploy-buttons/)
+for details about automatic resource provisioning and repository creation.
+
+### Manual deployment
+
+To deploy without the button:
+
+1. Authenticate Wrangler and create the resources named in `wrangler.jsonc`:
+  ```bash
+   npx wrangler login
+   npx wrangler d1 create formzero
+   npx wrangler r2 bucket create formzero-uploads
+   npx wrangler queues create formzero-deliveries
+   npx wrangler queues create formzero-deliveries-dlq
+  ```
+2. Replace the placeholder `database_id` in `wrangler.jsonc` with the ID
+  returned by `wrangler d1 create`. If you choose different resource names,
+   update their bindings in the same file.
+3. Configure production values. Secrets can be added with
+  `npx wrangler secret put <NAME>`:
+  - Required: `BETTER_AUTH_SECRET`.
+  - Recommended: `FORMZERO_ENCRYPTION_KEY` for encrypted credentials and
+  signed webhooks, plus `IP_HASH_SECRET` for hashed-IP storage and rate
+  limiting.
+  - Set `FORMZERO_PUBLIC_URL` and `BETTER_AUTH_BASE_URL` to the deployed
+  application URL.
+  - Optional: `TURNSTILE_SECRET` as a global fallback. A Turnstile secret can
+  instead be encrypted per form from the dashboard.
+4. Build, apply remote D1 migrations, and deploy:
+  ```bash
+   npm run deploy
+  ```
+
+Review [Cloudflare Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/),
+[D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/),
+[R2 pricing](https://developers.cloudflare.com/r2/pricing/), and
+[Queues pricing](https://developers.cloudflare.com/queues/platform/pricing/)
+for the current limits of your account. This project does not impose its own
+form or submission quotas, but Cloudflare resource limits still apply.
+
+### Updating a deployment
+
+The **Deploy to Cloudflare** button is intended for creating a new installation,
+not for updating an existing Worker. Running it again can create another
+repository or new resources.
+
+#### Deployment created with the button
+
+The button creates a GitHub or GitLab repository connected to
+[Cloudflare Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/).
+Update that generated repository and push its production branch:
+
+```bash
+git remote add upstream https://github.com/RobertCrash/formzero-ng.git
+git fetch upstream
+git checkout main
+git merge upstream/main
+npm install
+npm test
+npm run typecheck
+git push origin main
+```
+
+Add the `upstream` remote only once. Before pushing, resolve any conflicts by
+preserving the D1, R2, Queue, Worker names, and resource IDs written into the
+generated repository by Cloudflare. The push triggers a production build; its
+deploy command applies migrations and deploys the updated Worker.
+
+To redeploy the same commit without fetching an update, open the Worker in the
+Cloudflare dashboard, select **Deployments** → **View build history**, open the
+build menu, and select **Retry build**. Retrying a build does not pull newer
+FormZero NG code.
+
+#### Manually deployed installation
+
+Back up production data, review new migrations and configuration changes, then
+update and deploy the existing checkout:
+
+```bash
+git pull
+npm install
+npm test
+npm run typecheck
+npm run deploy
+```
+
+For either workflow, keep the existing D1 database, storage resources, Worker
+name, and secrets to preserve forms, submissions, files, endpoint URLs, and
+encrypted credentials. Changing authentication or encryption secrets can
+invalidate sessions or make stored credentials unreadable.
+
+## Submission endpoint
+
+Each form exposes:
+
+```text
+POST https://<your-worker>/api/forms/<form-id>/submissions
+```
+
+The dashboard's **Integration** page generates HTML and JavaScript examples
+that match the form's current field, security, CAPTCHA, and upload policy.
+
+To send a basic test submission to a live deployment, replace the values below
+and run:
+
+```bash
+FORMZERO_URL="https://your-worker.example.com"
+FORMZERO_FORM_ID="replace-with-form-id"
+FORM_ORIGIN="https://your-allowed-origin.example.com"
+
+curl --fail-with-body --show-error \
+  --request POST \
+  --url "${FORMZERO_URL}/api/forms/${FORMZERO_FORM_ID}/submissions" \
+  --header "Origin: ${FORM_ORIGIN}" \
+  --header "Accept: application/json" \
+  --header "Content-Type: application/json" \
+  --data '{"name":"Live test","email":"test@example.com","message":"Test submission from curl"}'
+```
+
+Replace the JSON keys with the form's configured field names. The origin must
+be allowed by the form's security settings; omit the `Origin` header only when
+the form permits requests without one. If Turnstile or honeypot timing is
+enabled, use the generated example on the **Integration** page so the required
+security fields and tokens are included.
+
+## Commands
+
+- `npm run dev` — start the local development server.
+- `npm run migrate` — apply D1 migrations locally.
+- `npm run migrate -- --remote` — apply D1 migrations remotely.
+- `npm run build` — create a production build.
+- `npm test` — run the Vitest suite.
+- `npm run typecheck` — regenerate Cloudflare and route types, then run
+TypeScript checks.
+- `npm run deploy` — build, migrate the remote D1 database, and deploy the
+Worker.
+
+
+
+## Technology
+
+- [Cloudflare Workers](https://developers.cloudflare.com/workers/), D1, R2, Queues, Rate Limiting, Cron Triggers, and Turnstile
+- [React 19](https://react.dev/)
+- [React Router 7](https://reactrouter.com/)
+- [Better Auth](https://www.better-auth.com/)
+- [Tailwind CSS 4](https://tailwindcss.com/) and [shadcn/ui](https://ui.shadcn.com/)
+- [Vitest](https://vitest.dev/)
+
+
+
+## Contributing
+
+Issues and pull requests are welcome in
+[RobertCrash/formzero-ng](https://github.com/RobertCrash/formzero-ng).
+
+## Acknowledgements
+
+FormZero NG was cloned from and remains based on
+[Bohdan Petryshyn's FormZero](https://github.com/BohdanPetryshyn/formzero).
+The upstream copyright notice is retained in [LICENSE](LICENSE).
 
 ## License
 
-MIT
-
+[MIT](LICENSE)

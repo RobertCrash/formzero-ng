@@ -1,10 +1,10 @@
 import type { CreatedDeliveryJob } from "./create-jobs.server"
 
 type DeliveryQueue = {
-  send(message: { jobId: string }): Promise<void>
+  send(message: { jobId: string }): Promise<unknown>
   sendBatch?(
     messages: Array<{ body: { jobId: string } }>
-  ): Promise<void>
+  ): Promise<unknown>
 }
 
 export async function publishDeliveryJobs({
@@ -42,29 +42,41 @@ export async function publishPendingDeliveryJobs({
   db,
   queue,
   limit = 100,
+  maxJobs = 1_000,
 }: {
   db: D1Database
   queue?: DeliveryQueue
   limit?: number
+  maxJobs?: number
 }) {
   if (!queue) return 0
-  const result = await db
-    .prepare(`
-      SELECT id, kind, target_id
-      FROM delivery_jobs
-      WHERE status IN ('pending', 'retry')
-        AND available_at <= ?
-      ORDER BY created_at
-      LIMIT ?
-    `)
-    .bind(Date.now(), limit)
-    .all<{ id: string; kind: CreatedDeliveryJob["kind"]; target_id: string | null }>()
+  let published = 0
+  while (published < maxJobs) {
+    const pageSize = Math.min(limit, maxJobs - published)
+    const result = await db
+      .prepare(`
+        SELECT id, kind, target_id
+        FROM delivery_jobs
+        WHERE status IN ('pending', 'retry')
+          AND available_at <= ?
+        ORDER BY created_at
+        LIMIT ?
+      `)
+      .bind(Date.now(), pageSize)
+      .all<{
+        id: string
+        kind: CreatedDeliveryJob["kind"]
+        target_id: string | null
+      }>()
 
-  const jobs = result.results.map((row) => ({
-    id: row.id,
-    kind: row.kind,
-    targetId: row.target_id,
-  }))
-  await publishDeliveryJobs({ db, queue, jobs })
-  return jobs.length
+    const jobs = result.results.map((row) => ({
+      id: row.id,
+      kind: row.kind,
+      targetId: row.target_id,
+    }))
+    await publishDeliveryJobs({ db, queue, jobs })
+    published += jobs.length
+    if (jobs.length < pageSize) break
+  }
+  return published
 }

@@ -8,7 +8,10 @@ import {
   validateOrigin,
 } from "~/lib/submissions/validate-origin"
 import { temporaryObjectKey } from "~/lib/uploads/object-key"
-import { sanitizeFilename } from "~/lib/uploads/validate-file"
+import {
+  isAllowedFileExtension,
+  sanitizeFilename,
+} from "~/lib/uploads/validate-file"
 
 type UploadRequest = {
   files: Array<{
@@ -82,6 +85,14 @@ export async function action({ request, params, context }: Route.ActionArgs) {
         !form.policy.uploads.allowedMimeTypes.includes(file.type.toLowerCase())
       ) {
         throw new Error(`${file.type} is not an allowed MIME type.`)
+      }
+      if (
+        !isAllowedFileExtension(
+          file.name,
+          form.policy.uploads.allowedExtensions
+        )
+      ) {
+        throw new Error(`${file.name} does not have an allowed extension.`)
       }
     }
 

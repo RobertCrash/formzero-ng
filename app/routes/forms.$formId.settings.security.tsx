@@ -3,52 +3,72 @@ import { data, useFetcher, useOutletContext } from "react-router"
 import type { Route } from "./+types/forms.$formId.settings.security"
 import type { SettingsOutletContext } from "./forms.$formId.settings"
 import { savePolicyRequest } from "~/lib/form-config/settings.server"
-import { putSecret } from "~/lib/secrets/secret-store.server"
+import {
+  deleteSecret,
+  putSecret,
+} from "~/lib/secrets/secret-store.server"
 import type { FormPolicyV1 } from "~/lib/form-config/types"
+import { requireAuth } from "~/lib/require-auth.server"
+import { loadFormWithPolicy } from "~/lib/form-config/load-form-policy.server"
 import { Button } from "~/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card"
 import { Input } from "~/components/ui/input"
 import { Label } from "~/components/ui/label"
 
 export async function action({ request, params, context }: Route.ActionArgs) {
+  await requireAuth(request, context.cloudflare.env.DB)
   const formData = await request.clone().formData()
   const turnstileSecret = String(formData.get("turnstile_secret") ?? "")
-  if (!turnstileSecret) {
-    return savePolicyRequest({
-      request,
-      formId: params.formId,
-      env: context.cloudflare.env,
-    })
-  }
-
-  const encryptionKey = (
-    context.cloudflare.env as Env & { FORMZERO_ENCRYPTION_KEY?: string }
-  ).FORMZERO_ENCRYPTION_KEY
-  if (!encryptionKey) {
-    return data(
-      { success: false, error: "FORMZERO_ENCRYPTION_KEY is not configured." },
-      { status: 503 }
-    )
-  }
   const rawPolicy = formData.get("policy")
   if (typeof rawPolicy !== "string") {
     return data({ success: false, error: "Policy is missing." }, { status: 400 })
   }
-  const policy = JSON.parse(rawPolicy) as FormPolicyV1
-  const existingId =
-    policy.security.captcha.enabled
-      ? policy.security.captcha.credentialId
-      : undefined
-  const credentialId = await putSecret({
-    db: context.cloudflare.env.DB,
-    encryptionKey,
-    formId: params.formId,
-    purpose: "turnstile_secret",
-    value: turnstileSecret,
-    secretId: existingId,
-  })
+  let policy: FormPolicyV1
+  try {
+    policy = JSON.parse(rawPolicy) as FormPolicyV1
+  } catch {
+    return data({ success: false, error: "Policy JSON is invalid." }, { status: 400 })
+  }
+  const currentForm = await loadFormWithPolicy(
+    context.cloudflare.env.DB,
+    params.formId
+  )
+  if (!currentForm) {
+    return data({ success: false, error: "Form not found." }, { status: 404 })
+  }
+  const currentCredentialId = currentForm.policy.security.captcha.enabled
+    ? currentForm.policy.security.captcha.credentialId
+    : undefined
+  let newCredentialId: string | undefined
+
+  if (turnstileSecret) {
+    if (!policy.security.captcha.enabled) {
+      return data(
+        { success: false, error: "Enable Turnstile before saving a secret." },
+        { status: 400 }
+      )
+    }
+    const encryptionKey = (
+      context.cloudflare.env as Env & { FORMZERO_ENCRYPTION_KEY?: string }
+    ).FORMZERO_ENCRYPTION_KEY
+    if (!encryptionKey) {
+      return data(
+        { success: false, error: "FORMZERO_ENCRYPTION_KEY is not configured." },
+        { status: 503 }
+      )
+    }
+    newCredentialId = await putSecret({
+      db: context.cloudflare.env.DB,
+      encryptionKey,
+      formId: params.formId,
+      purpose: "turnstile_secret",
+      value: turnstileSecret,
+      secretId: undefined,
+    })
+  }
   if (policy.security.captcha.enabled) {
-    policy.security.captcha.credentialId = credentialId
+    policy.security.captcha.credentialId =
+      newCredentialId ?? currentCredentialId
   }
   const replacement = new FormData()
   replacement.set("revision", String(formData.get("revision")))
@@ -56,7 +76,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   const headers = new Headers(request.headers)
   headers.delete("Content-Type")
   headers.delete("Content-Length")
-  return savePolicyRequest({
+  const result = await savePolicyRequest({
     request: new Request(request.url, {
       method: "POST",
       headers,
@@ -65,6 +85,22 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     formId: params.formId,
     env: context.cloudflare.env,
   })
+  const failed = Boolean(result.init?.status && result.init.status >= 400)
+  if (failed && newCredentialId) {
+    await deleteSecret(context.cloudflare.env.DB, newCredentialId)
+  } else if (
+    !failed &&
+    newCredentialId &&
+    currentCredentialId &&
+    currentCredentialId !== newCredentialId
+  ) {
+    try {
+      await deleteSecret(context.cloudflare.env.DB, currentCredentialId)
+    } catch (error) {
+      console.error("Failed to delete replaced Turnstile secret:", error)
+    }
+  }
+  return result
 }
 
 export default function SecuritySettings() {
@@ -176,7 +212,7 @@ export default function SecuritySettings() {
               <input
                 type="checkbox"
                 checked={captchaEnabled}
-                disabled={!capabilities.turnstile}
+                disabled={!capabilities.turnstile && !captchaEnabled}
                 onChange={(event) => setCaptchaEnabled(event.target.checked)}
               />
               Enable Cloudflare Turnstile
@@ -230,7 +266,7 @@ export default function SecuritySettings() {
               id="rate-profile"
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
               value={rateProfile}
-              disabled={!capabilities.rateLimiting}
+              disabled={!capabilities.rateLimiting && rateProfile === "off"}
               onChange={(event) =>
                 setRateProfile(event.target.value as typeof rateProfile)
               }

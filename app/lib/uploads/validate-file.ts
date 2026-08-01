@@ -9,9 +9,20 @@ export function sanitizeFilename(value: string) {
     .slice(0, 255) || "file"
 }
 
-function extensionOf(value: string) {
+export function extensionOf(value: string) {
   const index = value.lastIndexOf(".")
   return index >= 0 ? value.slice(index).toLowerCase() : ""
+}
+
+export function isAllowedFileExtension(
+  filename: string,
+  allowedExtensions: string[]
+) {
+  if (allowedExtensions.length === 0) return true
+  const allowed = allowedExtensions.map((item) =>
+    (item.startsWith(".") ? item : `.${item}`).toLowerCase()
+  )
+  return allowed.includes(extensionOf(filename))
 }
 
 export function validateFiles(
@@ -59,12 +70,7 @@ export function validateFiles(
       )
     }
     const extension = extensionOf(file.name)
-    if (
-      policy.uploads.allowedExtensions.length > 0 &&
-      !policy.uploads.allowedExtensions
-        .map((item) => (item.startsWith(".") ? item : `.${item}`).toLowerCase())
-        .includes(extension)
-    ) {
+    if (!isAllowedFileExtension(file.name, policy.uploads.allowedExtensions)) {
       throw new SubmissionError(
         "file_validation_failed",
         `The file extension ${extension || "unknown"} is not allowed.`

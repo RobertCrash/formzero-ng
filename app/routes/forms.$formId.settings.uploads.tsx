@@ -71,7 +71,7 @@ export default function UploadSettings() {
             <input
               type="checkbox"
               checked={uploads.enabled}
-              disabled={!capabilities.uploads}
+              disabled={!capabilities.uploads && !uploads.enabled}
               onChange={(event) =>
                 setUploads((current) => ({
                   ...current,

@@ -1,5 +1,10 @@
-import { useMemo } from "react"
-import { Link, useFetcher, useLoaderData } from "react-router"
+import { useEffect, useMemo } from "react"
+import {
+  Link,
+  useFetcher,
+  useLoaderData,
+  useRevalidator,
+} from "react-router"
 import type { Route } from "./+types/forms.$formId.submissions"
 import { createColumns } from "./forms.$formId.submissions/columns"
 import type { Submission } from "./forms.$formId.submissions/columns"
@@ -230,6 +235,17 @@ export default function SubmissionsPage() {
   const { formId, submissions, fields, stats, chartData, nextCursor, exportJobs } =
     useLoaderData<typeof loader>()
   const exportFetcher = useFetcher<{ success?: boolean; error?: string }>()
+  const revalidator = useRevalidator()
+  const hasPendingExport = exportJobs.some((job) =>
+    ["pending", "processing"].includes(job.status)
+  )
+  useEffect(() => {
+    if (!hasPendingExport) return
+    const interval = window.setInterval(() => {
+      if (revalidator.state === "idle") revalidator.revalidate()
+    }, 3_000)
+    return () => window.clearInterval(interval)
+  }, [hasPendingExport, revalidator])
 
   const columns = useMemo(() => createColumns(fields), [fields])
 

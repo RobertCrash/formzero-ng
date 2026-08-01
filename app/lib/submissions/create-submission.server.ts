@@ -2,6 +2,7 @@ import type { FormWithPolicy } from "../form-config/types"
 import type { BuiltSubmissionContext } from "./build-context.server"
 import { calculateDeleteAfter } from "../retention/calculate-delete-after"
 import { createDeliveryJobStatements } from "../delivery/create-jobs.server"
+import { SubmissionError } from "./errors"
 
 export type PreparedSubmissionFile = {
   id: string
@@ -13,6 +14,16 @@ export type PreparedSubmissionFile = {
   checksum: string | null
   uploadSessionId: string | null
   existingMetadata?: boolean
+}
+
+export class DirectUploadClaimError extends SubmissionError {
+  constructor() {
+    super(
+      "file_validation_failed",
+      "A direct-upload token was already attached or claimed."
+    )
+    this.name = "DirectUploadClaimError"
+  }
 }
 
 export async function createSubmissionWithJobs({
@@ -145,6 +156,15 @@ export async function createSubmissionWithJobs({
             )
           )
   )
+  const directFiles = files.filter((file) => file.existingMetadata)
+  const claimStatements = directFiles.map((file) =>
+    db
+      .prepare(`
+        INSERT INTO upload_file_claims (file_id, submission_id, claimed_at)
+        VALUES (?, ?, ?)
+      `)
+      .bind(file.id, submissionId, processedAt)
+  )
 
   const delivery = await createDeliveryJobStatements({
     db,
@@ -153,11 +173,38 @@ export async function createSubmissionWithJobs({
     now: processedAt,
   })
 
-  await db.batch([
-    insertSubmission,
-    ...fileStatements,
-    ...delivery.statements,
-  ])
+  let results: D1Result<unknown>[]
+  try {
+    results = await db.batch([
+      insertSubmission,
+      ...claimStatements,
+      ...fileStatements,
+      ...delivery.statements,
+    ])
+  } catch (error) {
+    if (
+      directFiles.length > 0 &&
+      error instanceof Error &&
+      /upload_file_claims|unique constraint/i.test(error.message)
+    ) {
+      throw new DirectUploadClaimError()
+    }
+    throw error
+  }
+  const claimResults = results.slice(1, 1 + claimStatements.length)
+  if (claimResults.some((result) => result.meta.changes !== 1)) {
+    throw new DirectUploadClaimError()
+  }
+  const fileResults = results.slice(
+    1 + claimStatements.length,
+    1 + claimStatements.length + fileStatements.length
+  )
+  if (
+    directFiles.length > 0 &&
+    fileResults.some((result) => result.meta.changes !== 1)
+  ) {
+    throw new DirectUploadClaimError()
+  }
 
   return {
     id: submissionId,

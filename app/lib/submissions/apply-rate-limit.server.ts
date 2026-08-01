@@ -38,17 +38,22 @@ export async function applyRateLimit({
     )
   }
 
-  const keys = [`form:${formId}`]
-  if (sourceIpHash) keys.push(`${formId}:${sourceIpHash}`)
-
-  for (const key of keys) {
-    const result = await binding.limit({ key })
-    if (!result.success) {
-      throw new SubmissionError(
-        "rate_limit_exceeded",
-        "Too many submissions. Try again later."
-      )
-    }
+  if (!sourceIpHash) {
+    throw new SubmissionError(
+      "capability_unavailable",
+      "Rate limiting requires IP_HASH_SECRET and a client IP address."
+    )
+  }
+  const key =
+    config.key === "ip"
+      ? `ip:${sourceIpHash}`
+      : `${formId}:${sourceIpHash}`
+  const result = await binding.limit({ key })
+  if (!result.success) {
+    throw new SubmissionError(
+      "rate_limit_exceeded",
+      "Too many submissions. Try again later."
+    )
   }
 
   return { enabled: true as const, profile: config.profile }

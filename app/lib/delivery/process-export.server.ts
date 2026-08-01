@@ -46,55 +46,73 @@ export async function processExport(
     fieldNames = fields.results.map((field) => field.name)
   }
 
-  const lines = [
-    ["ID", "Created At", ...fieldNames].map(csvValue).join(","),
-  ]
-  let cursorCreatedAt: number | null = null
-  let cursorId: string | null = null
   let rowCount = 0
-  while (true) {
-    const statement = env.DB.prepare(`
-      SELECT id, data, created_at
-      FROM submissions
-      WHERE form_id = ?
-        AND status = 'accepted'
-        ${
-          cursorCreatedAt === null
-            ? ""
-            : "AND (created_at < ? OR (created_at = ? AND id < ?))"
-        }
-      ORDER BY created_at DESC, id DESC
-      LIMIT 500
-    `)
-    const page: D1Result<{ id: string; data: string; created_at: number }> = await (
-      cursorCreatedAt === null
-        ? statement.bind(form.id)
-        : statement.bind(form.id, cursorCreatedAt, cursorCreatedAt, cursorId)
-    ).all<{ id: string; data: string; created_at: number }>()
-    for (const row of page.results) {
-      const values = JSON.parse(row.data) as Record<string, unknown>
-      lines.push(
-        [
-          row.id,
-          new Date(row.created_at).toISOString(),
-          ...fieldNames.map((field) => values[field]),
-        ]
-          .map(csvValue)
-          .join(",")
-      )
-      rowCount++
-    }
-    if (page.results.length < 500) break
-    const last: { id: string; data: string; created_at: number } =
-      page.results.at(-1)!
-    cursorCreatedAt = last.created_at
-    cursorId = last.id
-  }
-
   const objectKey = `exports/${form.id}/${job.id}.csv`
-  await env.UPLOADS.put(objectKey, lines.join("\n"), {
+  const stream = new TransformStream<Uint8Array, Uint8Array>()
+  const writer = stream.writable.getWriter()
+  const encoder = new TextEncoder()
+  const produceCsv = async () => {
+    let cursorCreatedAt: number | null = null
+    let cursorId: string | null = null
+    try {
+      await writer.write(
+        encoder.encode(
+          `${["ID", "Created At", ...fieldNames].map(csvValue).join(",")}\n`
+        )
+      )
+      while (true) {
+        const statement = env.DB.prepare(`
+          SELECT id, data, created_at
+          FROM submissions
+          WHERE form_id = ?
+            AND status = 'accepted'
+            ${
+              cursorCreatedAt === null
+                ? ""
+                : "AND (created_at < ? OR (created_at = ? AND id < ?))"
+            }
+          ORDER BY created_at DESC, id DESC
+          LIMIT 500
+        `)
+        const page: D1Result<{
+          id: string
+          data: string
+          created_at: number
+        }> = await (
+          cursorCreatedAt === null
+            ? statement.bind(form.id)
+            : statement.bind(form.id, cursorCreatedAt, cursorCreatedAt, cursorId)
+        ).all<{ id: string; data: string; created_at: number }>()
+        for (const row of page.results) {
+          const values = JSON.parse(row.data) as Record<string, unknown>
+          const line = [
+            row.id,
+            new Date(row.created_at).toISOString(),
+            ...fieldNames.map((field) => values[field]),
+          ]
+            .map(csvValue)
+            .join(",")
+          await writer.write(encoder.encode(`${line}\n`))
+          rowCount++
+        }
+        if (page.results.length < 500) break
+        const last: { id: string; data: string; created_at: number } =
+          page.results.at(-1)!
+        cursorCreatedAt = last.created_at
+        cursorId = last.id
+      }
+      await writer.close()
+    } catch (error) {
+      await writer.abort(error)
+      throw error
+    }
+  }
+  await Promise.all([
+    produceCsv(),
+    env.UPLOADS.put(objectKey, stream.readable, {
     httpMetadata: { contentType: "text/csv; charset=utf-8" },
-  })
+    }),
+  ])
   const completedAt = Date.now()
   await env.DB
     .prepare(`

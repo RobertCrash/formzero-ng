@@ -62,6 +62,41 @@ SET config_json = json('{
   }
 }');
 
+UPDATE forms
+SET config_json = json_set(
+    config_json,
+    '$.notifications.enabled',
+    CASE
+      WHEN EXISTS (
+        SELECT 1
+        FROM settings
+        WHERE id = 'global'
+          AND notification_email IS NOT NULL
+          AND notification_email_password IS NOT NULL
+          AND smtp_host IS NOT NULL
+          AND smtp_port IS NOT NULL
+      ) THEN json('true')
+      ELSE json('false')
+    END,
+    '$.notifications.recipients',
+    CASE
+      WHEN EXISTS (
+        SELECT 1
+        FROM settings
+        WHERE id = 'global'
+          AND notification_email IS NOT NULL
+          AND notification_email_password IS NOT NULL
+          AND smtp_host IS NOT NULL
+          AND smtp_port IS NOT NULL
+      ) THEN json_array((
+        SELECT notification_email
+        FROM settings
+        WHERE id = 'global'
+      ))
+      ELSE json('[]')
+    END
+);
+
 CREATE TABLE submissions_new (
     id TEXT PRIMARY KEY,
     form_id TEXT NOT NULL,
@@ -105,9 +140,23 @@ SELECT
     form_id,
     'legacy-' || id,
     0,
-    'accepted',
-    json(data),
-    json('{}'),
+    CASE
+      WHEN json_valid(data) THEN 'accepted'
+      ELSE 'failed'
+    END,
+    CASE
+      WHEN json_valid(data) THEN json(data)
+      ELSE json_object(
+        '_legacy_raw',
+        data,
+        '_migration_error',
+        'invalid_legacy_json'
+      )
+    END,
+    CASE
+      WHEN json_valid(data) THEN json('{}')
+      ELSE json_object('migrationError', 'invalid_legacy_json')
+    END,
     created_at
 FROM submissions
 ;
@@ -242,6 +291,14 @@ ON submission_files(submission_id);
 
 CREATE INDEX submission_files_expiry_idx
 ON submission_files(status, delete_after);
+
+CREATE TABLE upload_file_claims (
+    file_id TEXT PRIMARY KEY,
+    submission_id TEXT NOT NULL,
+    claimed_at INTEGER NOT NULL,
+    FOREIGN KEY (file_id) REFERENCES submission_files(id) ON DELETE CASCADE,
+    FOREIGN KEY (submission_id) REFERENCES submissions(id) ON DELETE CASCADE
+);
 
 CREATE TABLE export_jobs (
     id TEXT PRIMARY KEY,

@@ -38,11 +38,11 @@
 		"kysely-d1": "^0.4.0",
 		"lucide-react": "^0.563.0",
 		"next-themes": "^0.4.6",
-		"nodemailer": "^7.0.13",
+		"nodemailer": "^9.0.3",
 		"prism-react-renderer": "^2.4.1",
 		"react": "^19.2.4",
 		"react-dom": "^19.2.4",
-		"react-router": "^7.13.0",
+		"react-router": "^7.18.1",
 		"recharts": "^2.15.4",
 		"tailwind-merge": "^3.4.0",
 		"zod": "^4.4.3"
@@ -50,7 +50,7 @@
 	"devDependencies": {
 		"@cloudflare/vite-plugin": "^1.21.0",
 		"@cloudflare/vitest-pool-workers": "^0.18.8",
-		"@react-router/dev": "^7.13.0",
+		"@react-router/dev": "^7.18.1",
 		"@tailwindcss/vite": "^4.1.18",
 		"@types/better-sqlite3": "^7.6.13",
 		"@types/node": "^22.19.7",
@@ -69,7 +69,22 @@
 	"cloudflare": {
 		"bindings": {
 			"BETTER_AUTH_SECRET": {
-				"description": "Secret for authentication system. Use https://jwtsecrets.com or `openssl rand -hex 16` to generate a secure secret (32 characters). No need to remember it"
+				"description": "Required authentication secret. Generate a unique value with `openssl rand -hex 32` or a 256-bit hexadecimal value at [JWT Secrets](https://jwtsecrets.com/), and keep it unchanged across deployments."
+			},
+			"BETTER_AUTH_BASE_URL": {
+				"description": "Public HTTPS origin of this FormZero NG deployment, without a trailing slash."
+			},
+			"FORMZERO_ENCRYPTION_KEY": {
+				"description": "Recommended 32-byte key used to encrypt SMTP, Turnstile, and webhook secrets. Use `openssl rand -hex 32` or the [JWT Secrets Encryption Key Generator](https://jwtsecrets.com/tools/encryption-key-generator) with AES, 256-bit, hexadecimal output. Never rotate it without migrating stored secrets."
+			},
+			"FORMZERO_PUBLIC_URL": {
+				"description": "Public HTTPS origin of this FormZero NG deployment, without a trailing slash. Used for links in notifications."
+			},
+			"TURNSTILE_SECRET": {
+				"description": "Optional global Cloudflare Turnstile secret key. Leave empty when Turnstile is disabled or configure an encrypted key per form later."
+			},
+			"IP_HASH_SECRET": {
+				"description": "Recommended HMAC secret for hashed IP storage and IP-based rate limits. Generate a unique value with `openssl rand -hex 32` or a 256-bit hexadecimal value at [JWT Secrets](https://jwtsecrets.com/)."
 			}
 		}
 	}

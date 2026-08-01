@@ -28,8 +28,14 @@ describe("webhook security", () => {
     expect(() => validateWebhookDestination("http://example.com")).toThrow()
     expect(() => validateWebhookDestination("https://localhost/hook")).toThrow()
     expect(() => validateWebhookDestination("https://192.168.1.2/hook")).toThrow()
+    expect(() =>
+      validateWebhookDestination("https://[::ffff:7f00:1]/hook")
+    ).toThrow()
     expect(validateWebhookDestination("https://hooks.example.com").hostname).toBe(
       "hooks.example.com"
+    )
+    expect(validateWebhookDestination("https://fc.example.com").hostname).toBe(
+      "fc.example.com"
     )
   })
 })

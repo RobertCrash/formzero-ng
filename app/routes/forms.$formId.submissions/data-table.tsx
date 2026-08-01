@@ -67,7 +67,7 @@ export function DataTable<TData, TValue>({
     <div className="space-y-2 min-w-0">
       <div className="flex items-center justify-between gap-2">
         <Input
-          placeholder="Search submissions..."
+          placeholder="Search current page..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           className="max-w-sm"

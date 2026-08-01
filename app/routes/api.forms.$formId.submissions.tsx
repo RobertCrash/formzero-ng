@@ -3,7 +3,10 @@ import { data } from "react-router";
 import { loadFormWithPolicy } from "~/lib/form-config/load-form-policy.server";
 import { applyRateLimit } from "~/lib/submissions/apply-rate-limit.server";
 import { buildSubmissionContext } from "~/lib/submissions/build-context.server";
-import { createSubmissionWithJobs } from "~/lib/submissions/create-submission.server";
+import {
+  createSubmissionWithJobs,
+  DirectUploadClaimError,
+} from "~/lib/submissions/create-submission.server";
 import { SubmissionError } from "~/lib/submissions/errors";
 import { extractInternalFields } from "~/lib/submissions/normalize-fields";
 import { parseSubmissionRequest } from "~/lib/submissions/parse-request.server";
@@ -20,6 +23,10 @@ import { validateAndNormalizeFields } from "~/lib/submissions/validate-fields";
 import { verifyTurnstile } from "~/lib/submissions/verify-turnstile.server";
 import { uploadInlineFiles } from "~/lib/uploads/inline-upload.server";
 import { prepareDirectUploads } from "~/lib/uploads/complete-upload.server";
+import {
+  validateCombinedUploadLimits,
+  validateUploadRequestMode,
+} from "~/lib/uploads/validate-upload-request";
 import { publishDeliveryJobs } from "~/lib/delivery/publish-jobs.server";
 
 type SubmissionEnv = Env & {
@@ -114,11 +121,21 @@ export async function action({ request, params, context }: Route.ActionArgs) {
       env,
       sourceIp: submissionContext.observedIp,
     });
+    validateUploadRequestMode({
+      policy: form.policy,
+      inlineFiles: parsed.files,
+      directTokens: internal.uploadTokens,
+    });
     const directUploads = await prepareDirectUploads({
       db: env.DB,
       bucket: env.UPLOADS,
       form,
       tokens: internal.uploadTokens,
+    });
+    validateCombinedUploadLimits({
+      policy: form.policy,
+      inlineFiles: parsed.files,
+      directFiles: directUploads.files,
     });
     const attachedFileCounts = directUploads.files.reduce<Record<string, number>>(
       (counts, file) => {
@@ -183,10 +200,12 @@ export async function action({ request, params, context }: Route.ActionArgs) {
       });
     } catch (error) {
       await uploaded.cleanup();
-      await directUploads.cleanup();
+      if (!(error instanceof DirectUploadClaimError)) {
+        await directUploads.cleanup();
+      }
       throw error;
     }
-    await directUploads.finalize();
+    context.cloudflare.ctx.waitUntil(directUploads.finalize());
 
     context.cloudflare.ctx.waitUntil(
       publishDeliveryJobs({

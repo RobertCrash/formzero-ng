@@ -5,7 +5,7 @@ import { Copy, Check } from "lucide-react"
 import { Highlight, themes } from "prism-react-renderer"
 import { requireAuth } from "~/lib/require-auth.server"
 import { loadFormWithPolicy } from "~/lib/form-config/load-form-policy.server"
-import type { FieldRule } from "~/lib/form-config/types"
+import type { FieldRule, FormPolicyV1 } from "~/lib/form-config/types"
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs"
 import { Button } from "~/components/ui/button"
@@ -48,6 +48,147 @@ ${(field.options ?? []).map((option) => `      <option value="${option}">${optio
   </label>`
 }
 
+export function generateHtmlExample(
+  endpoint: string,
+  policy: FormPolicyV1
+) {
+  const fileFields = policy.fields.filter(
+    (field) => field.type === "file" || field.type === "files"
+  )
+  if (policy.uploads.enabled && policy.uploads.mode === "direct" && fileFields.length) {
+    return "<!-- Direct uploads require JavaScript. Use the JavaScript example. -->"
+  }
+  const multipart = policy.uploads.enabled && policy.uploads.mode === "inline"
+  if (
+    !multipart &&
+    !policy.request.allowedContentTypes.includes(
+      "application/x-www-form-urlencoded"
+    )
+  ) {
+    return "<!-- This policy does not accept browser-native form encoding. Use the JavaScript example. -->"
+  }
+  const honeypot = policy.security.honeypot.enabled
+    ? `  <input type="text" name="${policy.security.honeypot.fieldName}" tabindex="-1" autocomplete="off" hidden />
+  <input type="hidden" name="${policy.security.honeypot.startedAtFieldName ?? "_fz_started_at"}" value="" data-formzero-started-at />`
+    : ""
+  const turnstile = policy.security.captcha.enabled
+    ? `  <div class="cf-turnstile" data-sitekey="${policy.security.captcha.siteKey}"${policy.security.captcha.expectedAction ? ` data-action="${policy.security.captcha.expectedAction}"` : ""}></div>`
+    : ""
+  return `${policy.security.captcha.enabled ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>\n' : ""}<form action="${endpoint}" method="POST"${multipart ? ' enctype="multipart/form-data"' : ""}>
+${policy.fields.map(htmlField).join("\n")}
+${honeypot}
+${turnstile}
+  <button type="submit">Submit</button>
+</form>${policy.security.honeypot.enabled ? `\n<script>document.querySelector('[data-formzero-started-at]').value = Date.now()</script>` : ""}`
+}
+
+export function generateJavascriptExample(
+  endpoint: string,
+  policy: FormPolicyV1
+) {
+  const values = policy.fields
+    .filter((field) => field.type !== "file" && field.type !== "files")
+    .map((field) => `  ${JSON.stringify(field.name)}: ''`)
+  if (policy.security.honeypot.enabled) {
+    values.push(
+      `  ${JSON.stringify(policy.security.honeypot.fieldName)}: ''`,
+      `  ${JSON.stringify(policy.security.honeypot.startedAtFieldName ?? "_fz_started_at")}: Date.now()`
+    )
+  }
+  if (policy.security.captcha.enabled) {
+    values.push(`  "cf-turnstile-response": turnstile.getResponse()`)
+  }
+  const objectLiteral = `const values = {\n${values.join(",\n")}\n}`
+  const responseHandling = `const result = await response.json()
+if (!response.ok) {
+  console.error(result.error.code, result.error.fields, result.error.requestId)
+  throw new Error(result.error.message)
+}
+console.log('Submission:', result.id)`
+
+  if (policy.uploads.enabled && policy.uploads.mode === "direct") {
+    const fileFields = policy.fields.filter(
+      (field) => field.type === "file" || field.type === "files"
+    )
+    const selectedFiles = fileFields
+      .map(
+        (field) =>
+          `  ...Array.from(document.querySelector('[name="${field.name}"]').files).map(file => ({ field: "${field.name}", file }))`
+      )
+      .join(",\n")
+    return `${objectLiteral}
+const selectedFiles = [
+${selectedFiles}
+]
+const session = await fetch('${endpoint.replace(/\/submissions$/, "/uploads")}', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+  body: JSON.stringify({
+    files: selectedFiles.map(({ field, file }) => ({
+      field, name: file.name, type: file.type, size: file.size
+    }))
+  })
+}).then(response => response.json())
+
+await Promise.all(session.files.map((authorization, index) =>
+  fetch(authorization.uploadUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': selectedFiles[index].file.type },
+    body: selectedFiles[index].file
+  })
+))
+const completed = await fetch(
+  '${endpoint.replace(/\/submissions$/, "/uploads")}/' + session.sessionId + '/complete',
+  { method: 'POST', headers: { 'Accept': 'application/json' } }
+).then(response => response.json())
+values._fz_upload_tokens = completed.uploadTokens
+
+const response = await fetch('${endpoint}', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+  body: JSON.stringify(values)
+})
+${responseHandling}`
+  }
+
+  const acceptsJson = policy.request.allowedContentTypes.includes(
+    "application/json"
+  )
+  if (acceptsJson) {
+    return `${objectLiteral}
+const response = await fetch('${endpoint}', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+  body: JSON.stringify(values)
+})
+${responseHandling}`
+  }
+
+  const usesMultipart = policy.request.allowedContentTypes.includes(
+    "multipart/form-data"
+  )
+  const bodySetup = usesMultipart
+    ? `const body = new FormData()
+for (const [name, value] of Object.entries(values)) body.append(name, String(value))
+${policy.fields
+  .filter((field) => field.type === "file" || field.type === "files")
+  .map(
+    (field) =>
+      `for (const file of document.querySelector('[name="${field.name}"]').files) body.append("${field.name}", file)`
+  )
+  .join("\n")}`
+    : `const body = new URLSearchParams()
+for (const [name, value] of Object.entries(values)) body.append(name, String(value))`
+  return `${objectLiteral}
+${bodySetup}
+const response = await fetch('${endpoint}', {
+  method: 'POST',
+  headers: { 'Accept': 'application/json' },
+  body
+})
+${responseHandling}`
+}
+
 function CodeBlock({ code, language }: { code: string; language: string }) {
   const [copied, setCopied] = useState(false)
   return (
@@ -88,47 +229,8 @@ export default function IntegrationPage() {
   const { form } = useLoaderData<typeof loader>()
   const baseUrl = typeof window === "undefined" ? "" : window.location.origin
   const endpoint = `${baseUrl}/api/forms/${form.id}/submissions`
-  const multipart =
-    form.policy.uploads.enabled && form.policy.uploads.mode === "inline"
-      ? ' enctype="multipart/form-data"'
-      : ""
-  const honeypot = form.policy.security.honeypot.enabled
-    ? `  <input type="text" name="${form.policy.security.honeypot.fieldName}" tabindex="-1" autocomplete="off" hidden />
-  <input type="hidden" name="${form.policy.security.honeypot.startedAtFieldName ?? "_fz_started_at"}" value="" data-formzero-started-at />`
-    : ""
-  const turnstile = form.policy.security.captcha.enabled
-    ? `  <div class="cf-turnstile" data-sitekey="${form.policy.security.captcha.siteKey}"${form.policy.security.captcha.expectedAction ? ` data-action="${form.policy.security.captcha.expectedAction}"` : ""}></div>`
-    : ""
-  const html = `${form.policy.security.captcha.enabled ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>\n' : ""}<form action="${endpoint}" method="POST"${multipart}>
-${form.policy.fields.map(htmlField).join("\n")}
-${honeypot}
-${turnstile}
-  <button type="submit">Submit</button>
-</form>${form.policy.security.honeypot.enabled ? `\n<script>document.querySelector('[data-formzero-started-at]').value = Date.now()</script>` : ""}`
-  const javascript = `const response = await fetch('${endpoint}', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json'
-  },
-  body: JSON.stringify({
-${form.policy.fields
-  .filter((field) => field.type !== "file" && field.type !== "files")
-  .map((field) => `    ${JSON.stringify(field.name)}: ''`)
-  .join(",\n")}
-  })
-})
-
-const result = await response.json()
-if (!response.ok) {
-  console.error(result.error.code, result.error.fields, result.error.requestId)
-  throw new Error(result.error.message)
-}
-console.log('Submission:', result.id)${
-    form.policy.uploads.enabled && form.policy.uploads.mode === "direct"
-      ? `\n\n// Direct uploads: POST metadata to /api/forms/${form.id}/uploads,\n// PUT each file to the returned uploadUrl, complete the session,\n// then include uploadTokens as _fz_upload_tokens in the submission.`
-      : ""
-  }`
+  const html = generateHtmlExample(endpoint, form.policy)
+  const javascript = generateJavascriptExample(endpoint, form.policy)
   const publicConfig = `const config = await fetch(
   '${baseUrl}/api/forms/${form.id}/public-config',
   { headers: { Accept: 'application/json' } }

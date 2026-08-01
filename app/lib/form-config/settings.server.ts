@@ -116,6 +116,30 @@ export async function savePolicyRequest({
       { status: 422 }
     )
   }
+  if (
+    parsed.data.security.captcha.enabled &&
+    parsed.data.security.captcha.credentialId
+  ) {
+    const credential = await env.DB
+      .prepare(`
+        SELECT id
+        FROM form_secrets
+        WHERE id = ?
+          AND form_id = ?
+          AND purpose = 'turnstile_secret'
+      `)
+      .bind(parsed.data.security.captcha.credentialId, formId)
+      .first()
+    if (!credential) {
+      return data(
+        {
+          success: false,
+          error: "Turnstile credential does not belong to this form.",
+        },
+        { status: 422 }
+      )
+    }
+  }
   const capabilityCheck = validatePolicyCapabilities(parsed.data, env)
   if (capabilityCheck.errors.length > 0) {
     return data(

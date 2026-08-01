@@ -28,6 +28,64 @@ function isPrivateIpv4(hostname: string) {
   )
 }
 
+function parseIpv6(hostname: string) {
+  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase()
+  if (!normalized.includes(":")) return null
+  const [leftRaw, rightRaw = ""] = normalized.split("::", 2)
+  if (normalized.split("::").length > 2) return null
+  const parsePart = (part: string) => {
+    if (!part) return [] as number[]
+    return part.split(":").flatMap((segment) => {
+      if (segment.includes(".")) {
+        const octets = segment.split(".").map(Number)
+        if (
+          octets.length !== 4 ||
+          octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+        ) {
+          return [Number.NaN]
+        }
+        return [(octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]]
+      }
+      if (!/^[0-9a-f]{1,4}$/.test(segment)) return [Number.NaN]
+      return [Number.parseInt(segment, 16)]
+    })
+  }
+  const left = parsePart(leftRaw)
+  const right = parsePart(rightRaw)
+  if ([...left, ...right].some(Number.isNaN)) return null
+  const missing = 8 - left.length - right.length
+  if (
+    missing < 0 ||
+    (!normalized.includes("::") && missing !== 0) ||
+    (normalized.includes("::") && missing < 1)
+  ) {
+    return null
+  }
+  return [...left, ...Array(missing).fill(0), ...right]
+}
+
+function isPrivateIpv6(hostname: string) {
+  const segments = parseIpv6(hostname)
+  if (!segments) return false
+  const allZeroPrefix = segments.slice(0, 7).every((segment) => segment === 0)
+  if (allZeroPrefix && (segments[7] === 0 || segments[7] === 1)) return true
+  if ((segments[0] & 0xfe00) === 0xfc00) return true
+  if ((segments[0] & 0xffc0) === 0xfe80) return true
+  const mapped =
+    segments.slice(0, 5).every((segment) => segment === 0) &&
+    segments[5] === 0xffff
+  if (mapped) {
+    const ipv4 = [
+      segments[6] >> 8,
+      segments[6] & 0xff,
+      segments[7] >> 8,
+      segments[7] & 0xff,
+    ].join(".")
+    return isPrivateIpv4(ipv4)
+  }
+  return false
+}
+
 export function validateWebhookDestination(value: string) {
   const url = new URL(value)
   if (url.protocol !== "https:") {
@@ -37,10 +95,7 @@ export function validateWebhookDestination(value: string) {
   if (
     hostname === "localhost" ||
     hostname.endsWith(".localhost") ||
-    hostname === "::1" ||
-    hostname.startsWith("fc") ||
-    hostname.startsWith("fd") ||
-    hostname.startsWith("fe80:") ||
+    isPrivateIpv6(hostname) ||
     isPrivateIpv4(hostname)
   ) {
     throw new Error("Webhook URLs cannot target local or private addresses.")

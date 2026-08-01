@@ -3,12 +3,6 @@
   "include": [
     ".react-router/types/**/*",
     "app/**/*",
-    "components/**/*",
-    "app/lib/**/*",
-    "app/hooks/**/*",
-    "app/types/**/*",
-    "app/**/.server/**/*",
-    "app/**/.client/**/*",
     "workers/**/*",
     "worker-configuration.d.ts"
   ],
@@ -21,7 +15,6 @@
     "module": "ES2022",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
-    "baseUrl": ".",
     "rootDirs": [".", "./.react-router/types"],
     "paths": {
       "~/*": ["./app/*"],
