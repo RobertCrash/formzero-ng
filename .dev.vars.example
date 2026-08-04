@@ -1,6 +1,7 @@
 BETTER_AUTH_SECRET=""
-BETTER_AUTH_BASE_URL="http://localhost:5173"
-FORMZERO_ENCRYPTION_KEY=""
-FORMZERO_PUBLIC_URL="http://localhost:5173"
-TURNSTILE_SECRET=""
-IP_HASH_SECRET=""
+
+# Optional. Uncomment only the features you use in local development.
+# FORMZERO_ENCRYPTION_KEY=""
+# FORMZERO_PUBLIC_URL="http://localhost:5173"
+# TURNSTILE_SECRET=""
+# IP_HASH_SECRET=""

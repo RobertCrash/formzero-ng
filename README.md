@@ -83,11 +83,11 @@ npm run dev
 Before starting the app, fill in `.dev.vars`:
 
 - `BETTER_AUTH_SECRET` — secret used by Better Auth.
-- `BETTER_AUTH_BASE_URL` — local application URL; the default is
-`http://localhost:5173`.
-- `FORMZERO_ENCRYPTION_KEY` — exactly 32 bytes, encoded as 64 hexadecimal
-characters or base64; encrypts SMTP, Turnstile, and webhook secrets.
-- `FORMZERO_PUBLIC_URL` — public base URL used in generated links.
+- `FORMZERO_ENCRYPTION_KEY` — optional; exactly 32 bytes, encoded as 64
+hexadecimal characters or base64. It encrypts SMTP, Turnstile, and webhook
+secrets.
+- `FORMZERO_PUBLIC_URL` — optional public base URL used for links in
+notification emails.
 - `TURNSTILE_SECRET` — optional global Cloudflare Turnstile secret.
 - `IP_HASH_SECRET` — HMAC secret for hashed IP storage and IP-based rate
 limiting.
@@ -101,9 +101,7 @@ openssl rand -hex 32
 
 Alternatively, use [JWT Secrets](https://jwtsecrets.com/) to generate a
 different 256-bit hexadecimal value for `BETTER_AUTH_SECRET` and
-`IP_HASH_SECRET`. For `FORMZERO_ENCRYPTION_KEY`, use its
-[Encryption Key Generator](https://jwtsecrets.com/tools/encryption-key-generator)
-and select AES, 256 bits, and hexadecimal output.
+`IP_HASH_SECRET`.
 
 Use a different generated value for each one. Obtain `TURNSTILE_SECRET` from
 Cloudflare if you enable Turnstile. `.dev.vars` is ignored by Git.
@@ -121,13 +119,28 @@ lets you choose the Worker and resource names, provisions the D1 database, R2
 bucket, and Queues declared in `wrangler.jsonc`, applies the D1 migrations, and
 deploys the Worker.
 
-You will be prompted for the values declared in `.dev.vars.example`. Generate
-unique values for `BETTER_AUTH_SECRET`, `FORMZERO_ENCRYPTION_KEY`, and
-`IP_HASH_SECRET` with OpenSSL or the JWT Secrets alternatives described above.
-Keep them unchanged when updating the deployment. Set `BETTER_AUTH_BASE_URL`
-and `FORMZERO_PUBLIC_URL` to the deployment's public HTTPS origin.
-`TURNSTILE_SECRET` is optional because a Turnstile key can be configured per
-form later.
+The initial deployment prompts only for `BETTER_AUTH_SECRET`. Better Auth
+derives the application URL from incoming requests, so no public URL is needed
+before the first deployment. Keep the generated authentication secret unchanged
+when updating the deployment.
+
+### Optional post-deployment configuration
+
+After Cloudflare assigns the Worker URL, configure these values only when the
+corresponding features are needed:
+
+```bash
+# Encrypt stored SMTP, Turnstile, and webhook secrets.
+openssl rand -hex 32 | npx wrangler secret put FORMZERO_ENCRYPTION_KEY
+
+# Use the deployed HTTPS origin for links in notification emails.
+npx wrangler secret put FORMZERO_PUBLIC_URL
+```
+
+Enter the deployed origin without a trailing slash when prompted for
+`FORMZERO_PUBLIC_URL`. `TURNSTILE_SECRET` remains optional because a Turnstile
+key can be configured per form later. `IP_HASH_SECRET` is recommended for
+hashed-IP storage and IP-based rate limiting.
 
 See Cloudflare's
 [Deploy to Cloudflare documentation](https://developers.cloudflare.com/workers/platform/deploy-buttons/)
@@ -148,20 +161,14 @@ To deploy without the button:
 2. Replace the placeholder `database_id` in `wrangler.jsonc` with the ID
   returned by `wrangler d1 create`. If you choose different resource names,
    update their bindings in the same file.
-3. Configure production values. Secrets can be added with
-  `npx wrangler secret put <NAME>`:
-  - Required: `BETTER_AUTH_SECRET`.
-  - Recommended: `FORMZERO_ENCRYPTION_KEY` for encrypted credentials and
-  signed webhooks, plus `IP_HASH_SECRET` for hashed-IP storage and rate
-  limiting.
-  - Set `FORMZERO_PUBLIC_URL` and `BETTER_AUTH_BASE_URL` to the deployed
-  application URL.
-  - Optional: `TURNSTILE_SECRET` as a global fallback. A Turnstile secret can
-  instead be encrypted per form from the dashboard.
+3. Add the required authentication secret with
+  `npx wrangler secret put BETTER_AUTH_SECRET`.
 4. Build, apply remote D1 migrations, and deploy:
   ```bash
    npm run deploy
   ```
+5. Add any optional values from
+  [Optional post-deployment configuration](#optional-post-deployment-configuration).
 
 Review [Cloudflare Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/),
 [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/),

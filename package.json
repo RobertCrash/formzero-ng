@@ -70,21 +70,6 @@
 		"bindings": {
 			"BETTER_AUTH_SECRET": {
 				"description": "Required authentication secret. Generate a unique value with `openssl rand -hex 32` or a 256-bit hexadecimal value at [JWT Secrets](https://jwtsecrets.com/), and keep it unchanged across deployments."
-			},
-			"BETTER_AUTH_BASE_URL": {
-				"description": "Public HTTPS origin of this FormZero NG deployment, without a trailing slash."
-			},
-			"FORMZERO_ENCRYPTION_KEY": {
-				"description": "Recommended 32-byte key used to encrypt SMTP, Turnstile, and webhook secrets. Use `openssl rand -hex 32` or the [JWT Secrets Encryption Key Generator](https://jwtsecrets.com/tools/encryption-key-generator) with AES, 256-bit, hexadecimal output. Never rotate it without migrating stored secrets."
-			},
-			"FORMZERO_PUBLIC_URL": {
-				"description": "Public HTTPS origin of this FormZero NG deployment, without a trailing slash. Used for links in notifications."
-			},
-			"TURNSTILE_SECRET": {
-				"description": "Optional global Cloudflare Turnstile secret key. Leave empty when Turnstile is disabled or configure an encrypted key per form later."
-			},
-			"IP_HASH_SECRET": {
-				"description": "Recommended HMAC secret for hashed IP storage and IP-based rate limits. Generate a unique value with `openssl rand -hex 32` or a 256-bit hexadecimal value at [JWT Secrets](https://jwtsecrets.com/)."
 			}
 		}
 	}
