@@ -3,12 +3,14 @@ import {
   processDeliveryBatch,
   type DeliveryQueueMessage,
 } from "../app/lib/delivery/process-batch.server";
+import type { AppEnv } from "../app/lib/env";
+import { checkPlatformBindings } from "../app/lib/platform/check-bindings.server";
 import { runScheduledMaintenance } from "../app/lib/retention/run-scheduled-maintenance.server";
 
 declare module "react-router" {
   export interface AppLoadContext {
     cloudflare: {
-      env: Env;
+      env: AppEnv;
       ctx: ExecutionContext;
     };
   }
@@ -26,22 +28,18 @@ export default {
     });
   },
   async queue(batch, env) {
-    await processDeliveryBatch(
-      batch,
-      env as Env & {
-        FORMZERO_ENCRYPTION_KEY?: string;
-        FORMZERO_PUBLIC_URL?: string;
-      }
-    );
+    await processDeliveryBatch(batch, env);
   },
   async scheduled(_controller, env, ctx) {
-    ctx.waitUntil(
-      runScheduledMaintenance(
-        env as Env & {
-          DELIVERY_QUEUE?: Queue<{ jobId: string }>;
-          UPLOADS?: R2Bucket;
-        }
-      )
-    );
+    // Daily cron is the cheapest place to make a misconfigured binding visible
+    // in Workers Logs without bricking request handling.
+    const report = checkPlatformBindings(env);
+    if (!report.ok) {
+      console.error(
+        "FormZero platform bindings are misconfigured:",
+        JSON.stringify(report.problems)
+      );
+    }
+    ctx.waitUntil(runScheduledMaintenance(env));
   },
-} satisfies ExportedHandler<Env, DeliveryQueueMessage>;
+} satisfies ExportedHandler<AppEnv, DeliveryQueueMessage>;

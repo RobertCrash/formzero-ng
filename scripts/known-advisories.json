@@ -1,0 +1,14 @@
+{
+  "GHSA-4cwx-7wf7-3272": {
+    "package": "undici",
+    "severity": "high",
+    "reason": "Cache-directive parsing flaw in undici, reached only through miniflare, which is a devDependency of @cloudflare/vite-plugin used by the local dev server and the test runner. It is not part of the deployed Worker, which uses the runtime's own fetch. miniflare pins undici 7.28.0 exactly, including on its latest release, so there is nothing to upgrade to without overriding a pinned dependency.",
+    "reviewBy": "2026-11-01"
+  },
+  "GHSA-qwww-vcr4-c8h2": {
+    "package": "react-router",
+    "severity": "high",
+    "reason": "RSC mode CSRF bypass: an action runs before the 400 response. This app is classic SSR (react-router.config.ts sets ssr: true with no RSC entry, and nothing imports the RSC APIs), so the vulnerable code path is never reached. The fix ships only in react-router 8.3.0; there is no 7.x backport, so clearing this means a major upgrade.",
+    "reviewBy": "2026-11-01"
+  }
+}

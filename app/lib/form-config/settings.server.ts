@@ -1,4 +1,7 @@
 import { data } from "react-router"
+import { hasUsableEmailTransport } from "../email/transport.server"
+import type { AppEnv } from "../env"
+import { checkPlatformBindings } from "../platform/check-bindings.server"
 import { requireAuth } from "../require-auth.server"
 import { getCapabilities, validatePolicyCapabilities } from "./capabilities.server"
 import { loadFormWithPolicy } from "./load-form-policy.server"
@@ -15,7 +18,7 @@ export async function loadFormSettingsContext({
 }: {
   request: Request
   formId: string
-  env: Env
+  env: AppEnv
 }) {
   await requireAuth(request, env.DB)
   const form = await loadFormWithPolicy(env.DB, formId)
@@ -47,9 +50,11 @@ export async function loadFormSettingsContext({
       pending_deliveries: number
       failed_deliveries: number
     }>()
+  const emailTransport = await hasUsableEmailTransport({ env, db: env.DB })
   return {
     form,
-    capabilities: getCapabilities(env),
+    capabilities: getCapabilities(env, { emailTransport }),
+    platform: checkPlatformBindings(env),
     operations: operations ?? {
       file_count: 0,
       stored_bytes: 0,
@@ -66,7 +71,7 @@ export async function savePolicyRequest({
 }: {
   request: Request
   formId: string
-  env: Env
+  env: AppEnv
 }) {
   await requireAuth(request, env.DB)
   const body = await request.formData()
@@ -140,7 +145,12 @@ export async function savePolicyRequest({
       )
     }
   }
-  const capabilityCheck = validatePolicyCapabilities(parsed.data, env)
+  const capabilityCheck = validatePolicyCapabilities(parsed.data, env, {
+    // Only pay for the transport lookup when the policy actually needs it.
+    emailTransport: parsed.data.notifications.enabled
+      ? await hasUsableEmailTransport({ env, db: env.DB })
+      : false,
+  })
   if (capabilityCheck.errors.length > 0) {
     return data(
       {

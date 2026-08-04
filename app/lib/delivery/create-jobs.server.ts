@@ -1,4 +1,5 @@
 import type { FormWithPolicy } from "../form-config/types"
+import { buildDeliverySnapshot } from "./config-snapshot"
 
 export type CreatedDeliveryJob = {
   id: string
@@ -50,6 +51,11 @@ export async function createDeliveryJobStatements({
     })
   }
 
+  // Webhook jobs deliberately keep reading their target row: the URL, timeout and
+  // signing secret are a live destination the operator maintains, so a retry
+  // should follow a corrected URL rather than the one that failed.
+  const snapshot = JSON.stringify(buildDeliverySnapshot(form))
+
   const statements = jobs.map((job) =>
     db
       .prepare(`
@@ -63,8 +69,9 @@ export async function createDeliveryJobStatements({
           attempt_count,
           available_at,
           created_at,
-          updated_at
-        ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+          updated_at,
+          config_snapshot
+        ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)
       `)
       .bind(
         job.id,
@@ -74,7 +81,8 @@ export async function createDeliveryJobStatements({
         job.targetId,
         now,
         now,
-        now
+        now,
+        job.kind === "notification_email" ? snapshot : null
       )
   )
 

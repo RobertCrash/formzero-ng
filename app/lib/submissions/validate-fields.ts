@@ -1,16 +1,10 @@
 import type { FieldRule } from "../form-config/types"
 import { SubmissionError } from "./errors"
+import { parseIsoDate, parseIsoDateTime } from "./iso-datetime"
+import { getSafePattern, testSafePattern } from "./safe-pattern"
 
 function asValues(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [value]
-}
-
-function isIsoDate(value: string) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`))
-}
-
-function isIsoDateTime(value: string) {
-  return /^\d{4}-\d{2}-\d{2}T/.test(value) && !Number.isNaN(Date.parse(value))
 }
 
 function validateString(value: unknown, rule: FieldRule) {
@@ -23,8 +17,13 @@ function validateString(value: unknown, rule: FieldRule) {
   if (rule.maxLength !== undefined && normalized.length > rule.maxLength) {
     throw new Error(`Must not exceed ${rule.maxLength} characters.`)
   }
-  if (rule.pattern && !new RegExp(rule.pattern).test(normalized)) {
-    throw new Error("Has an invalid format.")
+  if (rule.pattern) {
+    // Deliberately not `new RegExp`: this pattern comes from the form owner but
+    // runs against public input, and JavaScript's backtracking engine turns a
+    // pattern like (a+)+$ into a CPU exhaustion vector.
+    if (!testSafePattern(getSafePattern(rule.pattern), normalized)) {
+      throw new Error("Has an invalid format.")
+    }
   }
 
   return normalized
@@ -85,14 +84,16 @@ function normalizeValue(value: unknown, rule: FieldRule): unknown {
 
   if (rule.type === "date") {
     const normalized = validateString(value, rule)
-    if (!isIsoDate(normalized)) throw new Error("Enter a valid ISO date.")
+    if (!parseIsoDate(normalized)) {
+      throw new Error("Enter a real calendar date as YYYY-MM-DD.")
+    }
     return normalized
   }
 
   if (rule.type === "datetime") {
     const normalized = validateString(value, rule)
-    if (!isIsoDateTime(normalized)) {
-      throw new Error("Enter a valid ISO date and time.")
+    if (!parseIsoDateTime(normalized)) {
+      throw new Error("Enter a real date and time as YYYY-MM-DDTHH:MM.")
     }
     return normalized
   }

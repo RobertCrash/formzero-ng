@@ -8,6 +8,9 @@
 		"seed": "yes Y | wrangler d1 execute DB --file seed.sql",
 		"cf-typegen": "wrangler types",
 		"deploy": "npm run build && npm run migrate -- --remote && wrangler deploy",
+		"deploy:init": "npm run build && wrangler deploy && npm run migrate -- --remote",
+		"check:config": "tsx scripts/check-wrangler-config.ts",
+		"check:advisories": "tsx scripts/check-advisories.ts",
 		"dev": "react-router dev",
 		"postinstall": "npm run cf-typegen",
 		"preview": "npm run build && vite preview",
@@ -57,6 +60,7 @@
 		"@types/nodemailer": "^7.0.9",
 		"@types/react": "^19.2.10",
 		"@types/react-dom": "^19.2.3",
+		"jsonc-parser": "^3.3.1",
 		"tailwindcss": "^4.1.18",
 		"tsx": "^4.21.0",
 		"tw-animate-css": "^1.4.0",
@@ -70,7 +74,16 @@
 		"bindings": {
 			"BETTER_AUTH_SECRET": {
 				"description": "Required authentication secret. Generate a unique value with `openssl rand -hex 32` or a 256-bit hexadecimal value at [JWT Secrets](https://jwtsecrets.com/), and keep it unchanged across deployments."
+			},
+			"FORMZERO_ENCRYPTION_KEY": {
+				"description": "Optional encryption key for stored credentials: custom SMTP passwords, per-form Turnstile secrets, and webhook signing secrets. Exactly 32 bytes as 64 hexadecimal characters (`openssl rand -hex 32`) or base64. Not needed when email uses the built-in Cloudflare Email Service transport. Changing it makes previously stored credentials unreadable."
 			}
 		}
+	},
+	"allowScripts": {
+		"esbuild@0.28.1": true,
+		"esbuild@0.27.2": true,
+		"better-sqlite3@12.6.2": true,
+		"workerd@1.20260722.1": true
 	}
 }

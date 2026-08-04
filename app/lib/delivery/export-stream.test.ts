@@ -56,6 +56,9 @@ describe("background CSV export", () => {
     let uploadedBody: unknown
     let uploadedText = ""
     const bucket = {
+      // processExport only writes, but assertBinding probes the read surface to
+      // tell an R2 bucket apart from a name bound to another resource type.
+      get: vi.fn(),
       put: vi.fn(async (_key: string, body: unknown) => {
         uploadedBody = body
         uploadedText =

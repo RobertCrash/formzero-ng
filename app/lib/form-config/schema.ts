@@ -1,5 +1,10 @@
 import { z } from "zod"
+import { describePatternProblem } from "../submissions/safe-pattern"
 import { FIELD_TYPES } from "./types"
+import {
+  INLINE_MAX_TOTAL_BYTES,
+  inlineRequestFloorBytes,
+} from "./upload-limits"
 
 const contentTypeSchema = z.enum([
   "application/json",
@@ -25,16 +30,36 @@ export const FieldRuleSchema = z.object({
   options: z.array(z.string().max(500)).max(500).optional(),
 })
 
-const captchaSchema = z.discriminatedUnion("enabled", [
-  z.object({ enabled: z.literal(false) }),
-  z.object({
-    enabled: z.literal(true),
-    provider: z.literal("turnstile"),
-    siteKey: z.string().min(1).max(200),
-    credentialId: z.string().min(1).max(200).optional(),
-    expectedAction: z.string().min(1).max(100).optional(),
-  }),
-])
+const captchaSchema = z
+  .discriminatedUnion("enabled", [
+    z.object({ enabled: z.literal(false) }),
+    z.object({
+      enabled: z.literal(true),
+      provider: z.literal("turnstile"),
+      siteKey: z.string().min(1).max(200),
+      /**
+       * Which secret verification must use. Left undefined by policies written
+       * before this field existed; those are read as "account" to match the
+       * fallback they were saved under.
+       */
+      secretSource: z.enum(["form", "account"]).optional(),
+      credentialId: z.string().min(1).max(200).optional(),
+      expectedAction: z.string().min(1).max(100).optional(),
+    }),
+  ])
+  .superRefine((captcha, ctx) => {
+    // Whether a secret is *reachable* depends on env and cannot be judged here;
+    // validatePolicyCapabilities does that. What is checkable is that the policy
+    // does not name a per-form secret it never stored, which used to resolve by
+    // silently borrowing the account secret instead.
+    if (captcha.enabled && captcha.secretSource === "form" && !captcha.credentialId) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["credentialId"],
+        message: "A form-owned Turnstile secret must be saved before it can be used.",
+      })
+    }
+  })
 
 const rateLimitSchema = z.discriminatedUnion("enabled", [
   z.object({ enabled: z.literal(false) }),
@@ -162,13 +187,15 @@ export const FormPolicyV1Schema = z
       }
 
       if (field.pattern) {
-        try {
-          new RegExp(field.pattern)
-        } catch {
+        // Checked against the restricted matcher that will actually run it, not
+        // against `new RegExp`, so a pattern cannot be saved that the submission
+        // path would then reject at request time.
+        const problem = describePatternProblem(field.pattern)
+        if (problem) {
           ctx.addIssue({
             code: "custom",
             path: ["fields", index, "pattern"],
-            message: "Pattern must be a valid regular expression.",
+            message: problem,
           })
         }
       }
@@ -214,6 +241,32 @@ export const FormPolicyV1Schema = z
       })
     }
 
+    if (!policy.uploads.enabled) {
+      // A required field that can never be supplied rejects every submission.
+      for (const field of fileFields) {
+        if (!field.required) continue
+        ctx.addIssue({
+          code: "custom",
+          path: ["fields", policy.fields.indexOf(field), "required"],
+          message:
+            `"${field.name}" is a required file field, but uploads are ` +
+            "disabled, so no submission could ever satisfy it.",
+        })
+      }
+    }
+
+    if (policy.uploads.enabled && fileFields.length > policy.uploads.maxFiles) {
+      // Every single-file field needs its own slot, so a form with more file
+      // fields than maxFiles cannot have them all filled in.
+      ctx.addIssue({
+        code: "custom",
+        path: ["uploads", "maxFiles"],
+        message:
+          `The form has ${fileFields.length} file fields but allows only ` +
+          `${policy.uploads.maxFiles} files per submission.`,
+      })
+    }
+
     if (
       policy.uploads.enabled &&
       policy.uploads.mode === "inline" &&
@@ -232,6 +285,32 @@ export const FormPolicyV1Schema = z
         path: ["uploads", "maxFileBytes"],
         message: "Per-file limit cannot exceed the total upload limit.",
       })
+    }
+
+    if (policy.uploads.enabled && policy.uploads.mode === "inline") {
+      // The request limit governs the whole multipart body, so an upload set
+      // larger than it can never reach per-file validation.
+      const floor = inlineRequestFloorBytes(policy.uploads)
+      if (policy.request.maxPayloadBytes < floor) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["request", "maxPayloadBytes"],
+          message:
+            `Inline uploads of up to ${policy.uploads.maxTotalBytes} bytes in ` +
+            `${policy.uploads.maxFiles} files need a request limit of at least ` +
+            `${floor} bytes, including multipart overhead.`,
+        })
+      }
+      if (policy.uploads.maxTotalBytes > INLINE_MAX_TOTAL_BYTES) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["uploads", "maxTotalBytes"],
+          message:
+            `Inline uploads are limited to ${INLINE_MAX_TOTAL_BYTES} bytes in ` +
+            "total because the request body is parsed in the Worker. Use direct " +
+            "upload mode for larger files.",
+        })
+      }
     }
 
     const redirectOrigins = new Set(

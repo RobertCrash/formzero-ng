@@ -35,6 +35,8 @@ export type CaptchaPolicy =
       enabled: true
       provider: "turnstile"
       siteKey: string
+      /** Undefined in policies written before the field existed; read as "account". */
+      secretSource?: "form" | "account"
       credentialId?: string
       expectedAction?: string
     }

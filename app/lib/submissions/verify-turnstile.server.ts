@@ -1,3 +1,4 @@
+import { resolveCaptchaSecretSource } from "../form-config/capabilities.server"
 import type { CaptchaPolicy } from "../form-config/types"
 import { getSecret } from "../secrets/secret-store.server"
 import { SubmissionError } from "./errors"
@@ -15,19 +16,34 @@ type TurnstileResponse = {
   "error-codes"?: string[]
 }
 
+/**
+ * Resolves the secret the policy names, and only that one.
+ *
+ * An unreadable form-owned secret used to fall through to the account secret,
+ * so a form could verify against a credential its owner never configured.
+ */
 async function resolveTurnstileSecret(config: CaptchaPolicy, env: TurnstileEnv) {
-  if (!config.enabled) return null
-  if (
-    config.credentialId &&
-    env.FORMZERO_ENCRYPTION_KEY
-  ) {
-    return getSecret({
-      db: env.DB,
-      encryptionKey: env.FORMZERO_ENCRYPTION_KEY,
-      secretId: config.credentialId,
-    })
+  const resolved = resolveCaptchaSecretSource(config, env)
+  if (resolved.source === null) return { secret: null, reason: resolved.reason }
+
+  if (resolved.source === "account") {
+    return { secret: env.TURNSTILE_SECRET!, reason: null }
   }
-  return env.TURNSTILE_SECRET ?? null
+
+  const secret = await getSecret({
+    db: env.DB,
+    encryptionKey: env.FORMZERO_ENCRYPTION_KEY!,
+    // resolveCaptchaSecretSource returns "form" only with a credentialId set.
+    secretId: (config as { credentialId: string }).credentialId,
+  })
+  return secret
+    ? { secret, reason: null }
+    : {
+        secret: null,
+        reason:
+          "The stored Turnstile secret could not be read. Re-enter it in the " +
+          "form's security settings.",
+      }
 }
 
 export async function verifyTurnstile({
@@ -48,12 +64,12 @@ export async function verifyTurnstile({
     throw new SubmissionError("captcha_failed", "CAPTCHA verification is required.")
   }
 
-  const secret = await resolveTurnstileSecret(config, env)
+  const { secret, reason } = await resolveTurnstileSecret(config, env)
   if (!secret) {
-    throw new SubmissionError(
-      "capability_unavailable",
-      "Turnstile is enabled but its secret is not configured."
-    )
+    // A misconfiguration, not a failed challenge: say so in the log while the
+    // public response stays generic.
+    console.error(`Turnstile verification could not run: ${reason}`)
+    throw new SubmissionError("capability_unavailable", reason!)
   }
 
   const body = new FormData()

@@ -1,3 +1,4 @@
+import { assertBinding } from "../platform/check-bindings.server"
 import type { CreatedDeliveryJob } from "./create-jobs.server"
 
 type DeliveryQueue = {
@@ -13,10 +14,13 @@ export async function publishDeliveryJobs({
   jobs,
 }: {
   db: D1Database
-  queue?: DeliveryQueue
+  queue: DeliveryQueue
   jobs: CreatedDeliveryJob[]
 }) {
-  if (jobs.length === 0 || !queue) return
+  if (jobs.length === 0) return
+  // Previously a missing queue returned silently here, leaving jobs 'pending'
+  // forever with nothing recorded anywhere.
+  assertBinding(queue, "DELIVERY_QUEUE")
 
   if (queue.sendBatch) {
     await queue.sendBatch(jobs.map((job) => ({ body: { jobId: job.id } })))
@@ -45,11 +49,10 @@ export async function publishPendingDeliveryJobs({
   maxJobs = 1_000,
 }: {
   db: D1Database
-  queue?: DeliveryQueue
+  queue: DeliveryQueue
   limit?: number
   maxJobs?: number
 }) {
-  if (!queue) return 0
   let published = 0
   while (published < maxJobs) {
     const pageSize = Math.min(limit, maxJobs - published)

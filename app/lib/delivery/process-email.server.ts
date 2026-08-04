@@ -1,9 +1,15 @@
-import { sendSubmissionNotification } from "../email.server"
+import { EmailTransportMissingError } from "../email/message"
+import { renderSubmissionNotification } from "../email/render.server"
+import {
+  loadEmailSettings,
+  resolveEmailTransport,
+} from "../email/transport.server"
 import { migrateFormPolicy } from "../form-config/migrate-config"
-import { loadSmtpConfig } from "./smtp-config.server"
+import { parseDeliverySnapshot } from "./config-snapshot"
 
 type EmailEnv = {
   DB: D1Database
+  EMAIL: SendEmail
   FORMZERO_ENCRYPTION_KEY?: string
   FORMZERO_PUBLIC_URL?: string
 }
@@ -13,6 +19,7 @@ export async function processEmail(
     id: string
     form_id: string
     submission_id: string
+    config_snapshot?: string | null
   },
   env: EmailEnv
 ) {
@@ -39,21 +46,32 @@ export async function processEmail(
     }>()
   if (!row) throw new Error("Submission no longer exists.")
 
-  const policy = migrateFormPolicy(
-    JSON.parse(row.config_json),
-    row.config_schema_version
-  )
-  if (!policy.notifications.enabled) return { skipped: true }
+  // The snapshot is what the submission was accepted under. Only jobs enqueued
+  // before migration 0010 fall back to the form's current policy.
+  const snapshot = parseDeliverySnapshot(job.config_snapshot ?? null)
+  const livePolicy = snapshot
+    ? null
+    : migrateFormPolicy(JSON.parse(row.config_json), row.config_schema_version)
+  const notifications = snapshot?.notifications ?? livePolicy!.notifications
+  const fields = snapshot?.fields ?? livePolicy!.fields
+  const formName = snapshot?.formName ?? row.form_name
+  if (!notifications.enabled) return { skipped: true }
 
-  const smtp = await loadSmtpConfig({
-    db: env.DB,
-    encryptionKey: env.FORMZERO_ENCRYPTION_KEY,
-  })
-  if (!smtp) throw new Error("SMTP transport is not configured.")
+  const transport = await resolveEmailTransport({ env, db: env.DB })
+  if (!transport) {
+    const settings = await loadEmailSettings(env.DB)
+    throw new EmailTransportMissingError(
+      settings === null
+        ? "No email transport is configured. Open global notification settings and choose a transport."
+        : settings.transport === "smtp"
+          ? "The custom SMTP transport is selected but its stored configuration is incomplete or undecryptable. Check the SMTP host, port and password, and that FORMZERO_ENCRYPTION_KEY is set."
+          : "The Cloudflare email transport needs a sender address on a domain onboarded for sending. Set it in global notification settings."
+    )
+  }
 
   const data = JSON.parse(row.data) as Record<string, unknown>
-  const replyToValue = policy.notifications.replyToField
-    ? data[policy.notifications.replyToField]
+  const replyToValue = notifications.replyToField
+    ? data[notifications.replyToField]
     : undefined
   const fileRows = await env.DB
     .prepare(`
@@ -71,19 +89,18 @@ export async function processEmail(
     }>()
   const baseUrl = env.FORMZERO_PUBLIC_URL?.replace(/\/$/, "") ?? ""
 
-  const result = await sendSubmissionNotification(smtp, {
+  const rendered = renderSubmissionNotification({
     id: job.submission_id,
     formId: job.form_id,
-    formName: row.form_name,
+    formName,
     data,
     createdAt: row.created_at,
-    recipients: policy.notifications.recipients,
     replyTo: typeof replyToValue === "string" ? replyToValue : undefined,
-    subject: policy.notifications.subjectTemplate?.replace(
+    subject: notifications.subjectTemplate?.replace(
       /\{\{\s*form\.name\s*\}\}/g,
-      row.form_name
+      formName
     ),
-    fields: policy.fields,
+    fields,
     files: fileRows.results.map((file) => ({
       id: file.id,
       name: file.original_name,
@@ -96,6 +113,16 @@ export async function processEmail(
       )}/files/${encodeURIComponent(file.id)}`,
     })),
   })
-  if (!result.success) throw new Error(result.error ?? "Email delivery failed.")
+
+  // The policy schema requires at least one recipient whenever notifications
+  // are enabled, so there is nothing to fall back to here.
+  await transport.send({
+    to: notifications.recipients,
+    from: transport.from,
+    replyTo: typeof replyToValue === "string" ? replyToValue : undefined,
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
+  })
   return { skipped: false }
 }

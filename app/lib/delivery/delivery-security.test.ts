@@ -49,7 +49,11 @@ describe("delivery idempotency", () => {
       }),
     }
     await expect(
-      processDeliveryJob("duplicate", { DB: db as never })
+      processDeliveryJob("duplicate", {
+        DB: db as never,
+        EMAIL: { send: vi.fn() } as never,
+        UPLOADS: {} as never,
+      })
     ).resolves.toEqual({})
     expect(run).toHaveBeenCalledOnce()
   })

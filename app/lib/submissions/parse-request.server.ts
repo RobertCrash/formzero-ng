@@ -1,4 +1,8 @@
 import type { FormPolicyV1 } from "../form-config/types"
+import {
+  ByteLimitExceededError,
+  createByteLimiter,
+} from "../uploads/limited-stream"
 import { SubmissionError } from "./errors"
 
 export type ParsedSubmissionRequest = {
@@ -8,35 +12,6 @@ export type ParsedSubmissionRequest = {
   payloadBytes: number
 }
 
-async function readBodyWithLimit(request: Request, maxBytes: number) {
-  if (!request.body) return new Uint8Array()
-
-  const reader = request.body.getReader()
-  const chunks: Uint8Array[] = []
-  let size = 0
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    size += value.byteLength
-    if (size > maxBytes) {
-      await reader.cancel()
-      throw new SubmissionError(
-        "payload_too_large",
-        "The request payload exceeds the configured limit."
-      )
-    }
-    chunks.push(value)
-  }
-
-  const body = new Uint8Array(size)
-  let offset = 0
-  for (const chunk of chunks) {
-    body.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return body
-}
 
 function formDataToValues(formData: FormData) {
   const fields: Record<string, unknown> = {}
@@ -91,12 +66,18 @@ export async function parseSubmissionRequest({
     )
   }
 
-  const body = await readBodyWithLimit(request, policy.request.maxPayloadBytes)
+  // Counted as it is parsed rather than buffered twice: the previous version
+  // collected every chunk and then copied them into a second Uint8Array, so
+  // peak memory was double the payload before parsing even started.
+  const limited = createByteLimiter(policy.request.maxPayloadBytes)
   const parsedRequest = new Request(request.url, {
     method: request.method,
     headers: request.headers,
-    body,
-  })
+    body: request.body?.pipeThrough(limited.stream) ?? null,
+    // Required whenever the body is a stream: the request finishes sending
+    // before the response is read.
+    duplex: "half",
+  } as RequestInit & { duplex: "half" })
 
   try {
     if (contentType === "application/json") {
@@ -111,7 +92,7 @@ export async function parseSubmissionRequest({
         encoding: "json",
         fields: value as Record<string, unknown>,
         files: {},
-        payloadBytes: body.byteLength,
+        payloadBytes: limited.bytesRead(),
       }
     }
 
@@ -121,10 +102,21 @@ export async function parseSubmissionRequest({
       encoding:
         contentType === "multipart/form-data" ? "multipart" : "urlencoded",
       ...values,
-      payloadBytes: body.byteLength,
+      payloadBytes: limited.bytesRead(),
     }
   } catch (error) {
     if (error instanceof SubmissionError) throw error
+    // The limit errors the stream mid-parse, so it arrives here as a body
+    // failure and has to be told apart from genuinely malformed input.
+    if (
+      error instanceof ByteLimitExceededError ||
+      limited.bytesRead() > policy.request.maxPayloadBytes
+    ) {
+      throw new SubmissionError(
+        "payload_too_large",
+        "The request payload exceeds the configured limit."
+      )
+    }
     throw new SubmissionError("malformed_request", "The request body is malformed.")
   }
 }

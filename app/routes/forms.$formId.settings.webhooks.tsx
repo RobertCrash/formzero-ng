@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { data, useFetcher, useLoaderData } from "react-router"
 import type { Route } from "./+types/forms.$formId.settings.webhooks"
 import { requireAuth } from "~/lib/require-auth.server"
@@ -80,11 +81,21 @@ export async function loader({ request, params, context }: Route.LoaderArgs) {
   return { webhooks: webhooks.results, attempts: attempts.results }
 }
 
+/**
+ * A 256-bit HMAC key, matching the digest it will be used with.
+ *
+ * The plaintext is returned to the caller exactly once, on creation and on
+ * rotation: it is stored encrypted and there is no read path, so a secret the
+ * operator never saw could not be used to verify a signature.
+ */
+function generateSigningSecret() {
+  return [...crypto.getRandomValues(new Uint8Array(32))]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+}
+
 export async function action({ request, params, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env as Env & {
-    FORMZERO_ENCRYPTION_KEY?: string
-    DELIVERY_QUEUE?: Queue<{ jobId: string }>
-  }
+  const env = context.cloudflare.env
   await requireAuth(request, env.DB)
   const body = await request.formData()
   const intent = String(body.get("intent") ?? "")
@@ -110,12 +121,13 @@ export async function action({ request, params, context }: Route.ActionArgs) {
       )
     }
     const id = crypto.randomUUID()
+    const secret = generateSigningSecret()
     const secretId = await putSecret({
       db: env.DB,
       encryptionKey: env.FORMZERO_ENCRYPTION_KEY,
       formId: params.formId,
       purpose: "webhook_signing",
-      value: crypto.randomUUID().replaceAll("-", ""),
+      value: secret,
     })
     const now = Date.now()
     await env.DB
@@ -127,7 +139,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
       `)
       .bind(id, params.formId, url, secretId, now, now)
       .run()
-    return data({ success: true })
+    return data({ success: true, revealedSecret: { webhookId: id, secret } })
   }
 
   const webhook = await env.DB
@@ -170,15 +182,19 @@ export async function action({ request, params, context }: Route.ActionArgs) {
         { status: 503 }
       )
     }
+    const secret = generateSigningSecret()
     await putSecret({
       db: env.DB,
       encryptionKey: env.FORMZERO_ENCRYPTION_KEY,
       formId: params.formId,
       purpose: "webhook_signing",
-      value: crypto.randomUUID().replaceAll("-", ""),
+      value: secret,
       secretId: webhook.secret_id,
     })
-    return data({ success: true })
+    return data({
+      success: true,
+      revealedSecret: { webhookId: webhook.id, secret },
+    })
   }
 
   if (intent === "retry") {
@@ -239,9 +255,63 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   return data({ success: false, error: "Unknown action." }, { status: 400 })
 }
 
+/**
+ * The one moment the plaintext exists outside the encrypted store. Dismissing
+ * it is deliberate rather than automatic, so it cannot vanish on a re-render
+ * before it has been copied.
+ */
+function RevealedSecret({
+  secret,
+  onDismiss,
+}: {
+  secret: string
+  onDismiss: () => void
+}) {
+  const [copied, setCopied] = useState(false)
+
+  return (
+    <div className="space-y-2 rounded-md border border-amber-500/60 bg-amber-50 p-3 text-sm dark:bg-amber-950/30">
+      <p className="font-medium">Signing secret</p>
+      <p>
+        Copy it now. It is stored encrypted and cannot be shown again — losing it
+        means rotating to a new one.
+      </p>
+      <div className="flex items-center gap-2">
+        <code className="flex-1 break-all rounded bg-background px-2 py-1 text-xs">
+          {secret}
+        </code>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            navigator.clipboard.writeText(secret).then(
+              () => setCopied(true),
+              () => setCopied(false)
+            )
+          }}
+        >
+          {copied ? "Copied" : "Copy"}
+        </Button>
+        <Button type="button" size="sm" variant="ghost" onClick={onDismiss}>
+          Dismiss
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 export default function WebhookSettings() {
   const { webhooks, attempts } = useLoaderData<typeof loader>()
-  const fetcher = useFetcher<{ success?: boolean; error?: string }>()
+  const fetcher = useFetcher<{
+    success?: boolean
+    error?: string
+    revealedSecret?: { webhookId: string; secret: string }
+  }>()
+  const [dismissedSecretFor, setDismissedSecretFor] = useState<string | null>(null)
+  const revealed = fetcher.data?.revealedSecret
+  const secretToShow =
+    revealed && revealed.secret !== dismissedSecretFor ? revealed : undefined
 
   return (
     <div className="space-y-4">
@@ -266,6 +336,12 @@ export default function WebhookSettings() {
             <CardTitle className="break-all text-base">{webhook.url}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
+            {secretToShow?.webhookId === webhook.id && (
+              <RevealedSecret
+                secret={secretToShow.secret}
+                onDismiss={() => setDismissedSecretFor(secretToShow.secret)}
+              />
+            )}
             <p className="text-sm text-muted-foreground">
               {webhook.enabled ? "Enabled" : "Disabled"} · Secret configured ·
               Last delivery: {webhook.last_status ?? "never"}

@@ -23,7 +23,7 @@ export async function loadFormWithPolicy(
         config_schema_version,
         config_revision
       FROM forms
-      WHERE id = ?
+      WHERE id = ? AND deleted_at IS NULL
     `)
     .bind(formId)
     .first<FormPolicyRow>()

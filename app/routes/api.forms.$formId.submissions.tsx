@@ -29,14 +29,6 @@ import {
 } from "~/lib/uploads/validate-upload-request";
 import { publishDeliveryJobs } from "~/lib/delivery/publish-jobs.server";
 
-type SubmissionEnv = Env & {
-  UPLOADS?: R2Bucket;
-  DELIVERY_QUEUE?: Queue<{ jobId: string }>;
-  TURNSTILE_SECRET?: string;
-  FORMZERO_ENCRYPTION_KEY?: string;
-  IP_HASH_SECRET?: string;
-};
-
 export async function loader({ request, params, context }: Route.LoaderArgs) {
   const form = await loadFormWithPolicy(
     context.cloudflare.env.DB,
@@ -65,7 +57,7 @@ export async function loader({ request, params, context }: Route.LoaderArgs) {
 export async function action({ request, params, context }: Route.ActionArgs) {
   const receivedAt = Date.now();
   const fallbackRequestId = crypto.randomUUID();
-  const env = context.cloudflare.env as SubmissionEnv;
+  const env = context.cloudflare.env;
   let cors = new Headers({ Vary: "Origin" });
   let form: Awaited<ReturnType<typeof loadFormWithPolicy>> = null;
   let requestId = fallbackRequestId;

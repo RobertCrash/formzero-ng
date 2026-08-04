@@ -16,7 +16,12 @@ export async function loader({ context, request }: Route.LoaderArgs) {
 
   // Fetch all forms
   const result = await database
-    .prepare("SELECT id, name FROM forms ORDER BY created_at ASC")
+    .prepare(`
+      SELECT id, name
+      FROM forms
+      WHERE deleted_at IS NULL
+      ORDER BY created_at ASC
+    `)
     .all()
 
   const forms = result.results as Form[]
@@ -55,14 +60,20 @@ export async function action({ request, context }: Route.ActionArgs) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
 
-  // Check if form with this ID already exists
+  // Includes tombstoned forms: the identifier stays taken until the purge has
+  // removed the stored files, and reusing it would attach them to the new form.
   const existing = await database
-    .prepare("SELECT id FROM forms WHERE id = ?")
+    .prepare("SELECT id, deleted_at FROM forms WHERE id = ?")
     .bind(id)
-    .first()
+    .first<{ id: string; deleted_at: number | null }>()
 
   if (existing) {
-    return { error: "A form with this name already exists" }
+    return {
+      error:
+        existing.deleted_at === null
+          ? "A form with this name already exists"
+          : "A deleted form still holds this name while its data is erased",
+    }
   }
 
   const createdAt = Date.now()

@@ -1,4 +1,5 @@
 import { loadFormWithPolicy } from "../form-config/load-form-policy.server"
+import { assertBinding } from "../platform/check-bindings.server"
 
 function csvValue(value: unknown) {
   let text =
@@ -13,9 +14,9 @@ function csvValue(value: unknown) {
 
 export async function processExport(
   exportJobId: string,
-  env: { DB: D1Database; UPLOADS?: R2Bucket }
+  env: { DB: D1Database; UPLOADS: R2Bucket }
 ) {
-  if (!env.UPLOADS) throw new Error("UPLOADS R2 binding is unavailable.")
+  assertBinding(env.UPLOADS, "UPLOADS")
   const job = await env.DB
     .prepare(`
       SELECT id, form_id

@@ -48,12 +48,17 @@ export async function action({ request, params, context }: Route.ActionArgs) {
         { status: 400 }
       )
     }
-    const encryptionKey = (
-      context.cloudflare.env as Env & { FORMZERO_ENCRYPTION_KEY?: string }
-    ).FORMZERO_ENCRYPTION_KEY
+    const encryptionKey = context.cloudflare.env.FORMZERO_ENCRYPTION_KEY
     if (!encryptionKey) {
       return data(
-        { success: false, error: "FORMZERO_ENCRYPTION_KEY is not configured." },
+        {
+          success: false,
+          error:
+            "A form-owned Turnstile secret is stored encrypted, which needs " +
+            "FORMZERO_ENCRYPTION_KEY. Set it with `wrangler secret put " +
+            "FORMZERO_ENCRYPTION_KEY`, or use the account-wide TURNSTILE_SECRET " +
+            "instead.",
+        },
         { status: 503 }
       )
     }
@@ -67,8 +72,29 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     })
   }
   if (policy.security.captcha.enabled) {
-    policy.security.captcha.credentialId =
-      newCredentialId ?? currentCredentialId
+    if (
+      policy.security.captcha.secretSource === "form" &&
+      !newCredentialId &&
+      !currentCredentialId
+    ) {
+      return data(
+        {
+          success: false,
+          error:
+            "Enter the Turnstile secret for this form, or switch it to the " +
+            "account-wide secret.",
+        },
+        { status: 400 }
+      )
+    }
+    if (policy.security.captcha.secretSource === "account") {
+      // Switching to the account secret must not leave a stale credentialId
+      // behind, or the policy would claim a per-form secret it no longer uses.
+      policy.security.captcha.credentialId = undefined
+    } else {
+      policy.security.captcha.credentialId =
+        newCredentialId ?? currentCredentialId
+    }
   }
   const replacement = new FormData()
   replacement.set("revision", String(formData.get("revision")))
@@ -86,18 +112,21 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     env: context.cloudflare.env,
   })
   const failed = Boolean(result.init?.status && result.init.status >= 400)
-  if (failed && newCredentialId) {
-    await deleteSecret(context.cloudflare.env.DB, newCredentialId)
-  } else if (
-    !failed &&
-    newCredentialId &&
-    currentCredentialId &&
-    currentCredentialId !== newCredentialId
-  ) {
+  if (failed) {
+    if (newCredentialId) await deleteSecret(context.cloudflare.env.DB, newCredentialId)
+    return result
+  }
+  // The saved policy is now authoritative. Anything it no longer references —
+  // a replaced secret, or one abandoned by switching to the account secret — is
+  // unreachable and should not linger encrypted in the table.
+  const keptCredentialId = policy.security.captcha.enabled
+    ? policy.security.captcha.credentialId
+    : undefined
+  if (currentCredentialId && currentCredentialId !== keptCredentialId) {
     try {
       await deleteSecret(context.cloudflare.env.DB, currentCredentialId)
     } catch (error) {
-      console.error("Failed to delete replaced Turnstile secret:", error)
+      console.error("Failed to delete unreferenced Turnstile secret:", error)
     }
   }
   return result
@@ -127,6 +156,17 @@ export default function SecuritySettings() {
       : ""
   )
   const [turnstileSecret, setTurnstileSecret] = useState("")
+  const previousCaptcha = form.policy.security.captcha
+  const savedCredentialId = previousCaptcha.enabled
+    ? previousCaptcha.credentialId
+    : undefined
+  const [secretSource, setSecretSource] = useState<"form" | "account">(() => {
+    if (previousCaptcha.enabled && previousCaptcha.secretSource) {
+      return previousCaptcha.secretSource
+    }
+    if (savedCredentialId) return "form"
+    return capabilities.turnstileAccountSecret ? "account" : "form"
+  })
   const [honeypotEnabled, setHoneypotEnabled] = useState(
     form.policy.security.honeypot.enabled
   )
@@ -142,7 +182,6 @@ export default function SecuritySettings() {
   )
   const [ipMode, setIpMode] = useState(form.policy.privacy.ipMode)
 
-  const previousCaptcha = form.policy.security.captcha
   const policy: FormPolicyV1 = {
     ...form.policy,
     security: {
@@ -158,9 +197,11 @@ export default function SecuritySettings() {
             provider: "turnstile",
             siteKey,
             expectedAction: expectedAction || undefined,
-            credentialId: previousCaptcha.enabled
-              ? previousCaptcha.credentialId
-              : undefined,
+            secretSource,
+            // The action replaces this with the id it actually stored; sending
+            // the saved one keeps a blank secret field meaning "keep it".
+            credentialId:
+              secretSource === "form" ? savedCredentialId : undefined,
           }
         : { enabled: false },
       honeypot: {
@@ -175,6 +216,12 @@ export default function SecuritySettings() {
     },
     privacy: { ...form.policy.privacy, ipMode },
   }
+
+  const captchaSecretMissing =
+    captchaEnabled &&
+    secretSource === "form" &&
+    !savedCredentialId &&
+    !turnstileSecret
 
   return (
     <Card>
@@ -217,6 +264,14 @@ export default function SecuritySettings() {
               />
               Enable Cloudflare Turnstile
             </label>
+            {!capabilities.turnstile && (
+              <p className="text-sm text-muted-foreground">
+                Turnstile needs a secret. Set the account-wide{" "}
+                <code>TURNSTILE_SECRET</code>, or set{" "}
+                <code>FORMZERO_ENCRYPTION_KEY</code> so this form can store its
+                own.
+              </p>
+            )}
             {captchaEnabled && (
               <>
                 <Input
@@ -224,17 +279,47 @@ export default function SecuritySettings() {
                   value={siteKey}
                   onChange={(event) => setSiteKey(event.target.value)}
                 />
-                <Input
-                  name="turnstile_secret"
-                  type="password"
-                  placeholder={
-                    previousCaptcha.enabled && previousCaptcha.credentialId
-                      ? "Leave blank to keep saved secret"
-                      : "Turnstile secret"
-                  }
-                  value={turnstileSecret}
-                  onChange={(event) => setTurnstileSecret(event.target.value)}
-                />
+                <fieldset className="space-y-2">
+                  <legend className="text-sm font-medium">Secret</legend>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="secret_source"
+                      value="account"
+                      checked={secretSource === "account"}
+                      disabled={!capabilities.turnstileAccountSecret}
+                      onChange={() => setSecretSource("account")}
+                    />
+                    Account-wide <code>TURNSTILE_SECRET</code>
+                    {!capabilities.turnstileAccountSecret && " (not set)"}
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="secret_source"
+                      value="form"
+                      checked={secretSource === "form"}
+                      disabled={!capabilities.credentialEncryption}
+                      onChange={() => setSecretSource("form")}
+                    />
+                    A secret stored for this form
+                    {!capabilities.credentialEncryption &&
+                      " (needs FORMZERO_ENCRYPTION_KEY)"}
+                  </label>
+                </fieldset>
+                {secretSource === "form" && (
+                  <Input
+                    name="turnstile_secret"
+                    type="password"
+                    placeholder={
+                      savedCredentialId
+                        ? "Leave blank to keep saved secret"
+                        : "Turnstile secret"
+                    }
+                    value={turnstileSecret}
+                    onChange={(event) => setTurnstileSecret(event.target.value)}
+                  />
+                )}
                 <Input
                   placeholder="Expected action (optional)"
                   value={expectedAction}
@@ -259,6 +344,13 @@ export default function SecuritySettings() {
               value={minimumFillTime}
               onChange={(event) => setMinimumFillTime(Number(event.target.value))}
             />
+            {honeypotEnabled && minimumFillTime > 0 && (
+              <p className="text-sm text-muted-foreground">
+                Measured from a timestamp the page sets with JavaScript, so a
+                submission that does not carry one fails this check. Set it to 0
+                if the form must accept clients without JavaScript.
+              </p>
+            )}
           </div>
           <div className="space-y-2">
             <Label htmlFor="rate-profile">Rate-limit profile</Label>
@@ -266,7 +358,6 @@ export default function SecuritySettings() {
               id="rate-profile"
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
               value={rateProfile}
-              disabled={!capabilities.rateLimiting && rateProfile === "off"}
               onChange={(event) =>
                 setRateProfile(event.target.value as typeof rateProfile)
               }
@@ -295,7 +386,15 @@ export default function SecuritySettings() {
           {fetcher.data?.error && (
             <p className="text-sm text-destructive">{fetcher.data.error}</p>
           )}
-          <Button disabled={fetcher.state !== "idle"}>Save security</Button>
+          <Button disabled={fetcher.state !== "idle" || captchaSecretMissing}>
+            Save security
+          </Button>
+          {captchaSecretMissing && (
+            <p className="text-sm text-amber-600">
+              Enter the Turnstile secret for this form before saving, or switch
+              it to the account-wide secret.
+            </p>
+          )}
         </fetcher.Form>
       </CardContent>
     </Card>

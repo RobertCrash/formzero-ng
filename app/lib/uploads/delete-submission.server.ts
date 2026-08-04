@@ -5,7 +5,7 @@ export async function deleteSubmissionWithFiles({
   submissionId,
 }: {
   db: D1Database
-  bucket?: R2Bucket
+  bucket: R2Bucket
   formId: string
   submissionId: string
 }) {
@@ -45,13 +45,10 @@ export async function deleteSubmissionWithFiles({
     `)
     .bind(submissionId)
     .all<{ id: string; object_key: string }>()
-  if (files.results.length > 0 && !bucket) {
-    return { found: true, deleted: false }
-  }
 
   for (const file of files.results) {
     try {
-      await bucket!.delete(file.object_key)
+      await bucket.delete(file.object_key)
       await db
         .prepare("UPDATE submission_files SET status = 'deleted' WHERE id = ?")
         .bind(file.id)
@@ -76,54 +73,3 @@ export async function deleteSubmissionWithFiles({
   return { found: true, deleted: true }
 }
 
-export async function deleteFormWithFiles({
-  db,
-  bucket,
-  formId,
-}: {
-  db: D1Database
-  bucket?: R2Bucket
-  formId: string
-}) {
-  const submissions = await db
-    .prepare("SELECT id FROM submissions WHERE form_id = ?")
-    .bind(formId)
-    .all<{ id: string }>()
-  for (const submission of submissions.results) {
-    const result = await deleteSubmissionWithFiles({
-      db,
-      bucket,
-      formId,
-      submissionId: submission.id,
-    })
-    if (!result.deleted) return { deleted: false }
-  }
-  const remainingFiles = await db
-    .prepare(`
-      SELECT id, object_key
-      FROM submission_files
-      WHERE form_id = ?
-    `)
-    .bind(formId)
-    .all<{ id: string; object_key: string }>()
-  if (remainingFiles.results.length > 0 && !bucket) {
-    return { deleted: false }
-  }
-  for (const file of remainingFiles.results) {
-    try {
-      await bucket!.delete(file.object_key)
-      await db
-        .prepare("DELETE FROM submission_files WHERE id = ?")
-        .bind(file.id)
-        .run()
-    } catch (error) {
-      console.error("Failed to delete unattached R2 object:", file.object_key, error)
-      return { deleted: false }
-    }
-  }
-  const result = await db
-    .prepare("DELETE FROM forms WHERE id = ?")
-    .bind(formId)
-    .run()
-  return { deleted: result.meta.changes > 0 }
-}

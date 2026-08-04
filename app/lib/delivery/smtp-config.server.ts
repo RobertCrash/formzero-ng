@@ -7,11 +7,17 @@ type SmtpSettingsRow = {
   smtp_host: string | null
   smtp_port: number | null
   smtp_secure: number | null
-  smtp_from_address: string | null
-  smtp_from_name: string | null
   smtp_secret_id: string | null
 }
 
+/**
+ * Loads the stored SMTP connection, migrating a legacy plaintext password into
+ * the encrypted secret store when a key is available.
+ *
+ * The sender address is deliberately not read here: it lives in
+ * settings.email_from_address, is shared by both transports, and the superseded
+ * smtp_from_address / smtp_from_name columns were never written by any code path.
+ */
 export async function loadSmtpConfig({
   db,
   encryptionKey,
@@ -27,8 +33,6 @@ export async function loadSmtpConfig({
         smtp_host,
         smtp_port,
         smtp_secure,
-        smtp_from_address,
-        smtp_from_name,
         smtp_secret_id
       FROM settings
       WHERE id = 'global'
@@ -79,7 +83,5 @@ export async function loadSmtpConfig({
     smtp_host: settings.smtp_host,
     smtp_port: settings.smtp_port,
     smtp_secure: settings.smtp_secure === 1,
-    from_address: settings.smtp_from_address ?? settings.notification_email,
-    from_name: settings.smtp_from_name ?? undefined,
   }
 }

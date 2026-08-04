@@ -1,12 +1,24 @@
 import type { Route } from "./+types/settings.notifications.test"
 import { data } from "react-router"
-import { sendTestEmail } from "~/lib/email.server"
+import { EmailSendError } from "~/lib/email/message"
+import { renderTestEmail } from "~/lib/email/render.server"
+import {
+  loadEmailSettings,
+  resolveEmailTransport,
+} from "~/lib/email/transport.server"
 import { requireAuth } from "~/lib/require-auth.server"
 
+/**
+ * Tests the transport the queue will actually use.
+ *
+ * The previous version sent with the password straight from the POST body,
+ * never reading D1 and never decrypting, so a green test could coexist with a
+ * queue that could not decrypt anything. Save first, then test what is stored.
+ */
 export async function action({ context, request }: Route.ActionArgs) {
-  const database = context.cloudflare.env.DB
+  const env = context.cloudflare.env
 
-  await requireAuth(request, database)
+  await requireAuth(request, env.DB)
 
   if (request.method !== "POST") {
     return data(
@@ -16,48 +28,67 @@ export async function action({ context, request }: Route.ActionArgs) {
   }
 
   try {
-    // Parse form data
-    const formData = await request.formData()
-    const notification_email = formData.get("notification_email") as string
-    const notification_email_password = formData.get("notification_email_password") as string
-    const smtp_host = formData.get("smtp_host") as string
-    const smtp_port = formData.get("smtp_port") as string
-    const smtp_secure = formData.get("smtp_secure") === "1"
-
-    // Validate required fields
-    if (!notification_email || !notification_email_password || !smtp_host || !smtp_port) {
+    const settings = await loadEmailSettings(env.DB)
+    if (!settings) {
       return data(
-        { success: false, error: "Missing required fields" },
+        {
+          success: false,
+          error: "Save your notification settings before sending a test.",
+        },
         { status: 400 }
       )
     }
 
-    // Send test email using the email service
-    const result = await sendTestEmail({
-      notification_email,
-      notification_email_password,
-      smtp_host,
-      smtp_port: parseInt(smtp_port, 10),
-      smtp_secure,
+    const transport = await resolveEmailTransport({ env, db: env.DB })
+    if (!transport) {
+      return data(
+        {
+          success: false,
+          error:
+            settings.transport === "smtp"
+              ? "The stored SMTP configuration is incomplete or cannot be decrypted. Re-enter the password, and confirm FORMZERO_ENCRYPTION_KEY is set."
+              : "Set a sender address on a domain onboarded for Cloudflare Email Sending.",
+        },
+        { status: 503 }
+      )
+    }
+
+    const recipient =
+      settings.notificationEmail ?? settings.fromAddress ?? transport.from.email
+    const rendered = renderTestEmail(
+      transport.kind === "cloudflare"
+        ? "Cloudflare Email Service"
+        : `SMTP (${settings.notificationEmail ?? "stored configuration"})`
+    )
+
+    const result = await transport.send({
+      to: [recipient],
+      from: transport.from,
+      subject: rendered.subject,
+      html: rendered.html,
+      text: rendered.text,
     })
 
-    if (result.success) {
-      return data(
-        { success: true, messageId: result.messageId },
-        { status: 200 }
-      )
-    } else {
-      return data(
-        { success: false, error: result.error },
-        { status: 400 }
-      )
-    }
+    return data(
+      {
+        success: true,
+        messageId: result.messageId,
+        transport: transport.kind,
+        recipient,
+      },
+      { status: 200 }
+    )
   } catch (error) {
     console.error("Error testing email settings:", error)
-
     return data(
-      { success: false, error: "Failed to send test email" },
-      { status: 500 }
+      {
+        success: false,
+        error:
+          error instanceof EmailSendError
+            ? error.message
+            : "Failed to send test email",
+      },
+      { status: 400 }
     )
   }
 }

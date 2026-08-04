@@ -4,6 +4,10 @@ import type { Route } from "./+types/forms.$formId.settings.uploads"
 import type { SettingsOutletContext } from "./forms.$formId.settings"
 import { savePolicyRequest } from "~/lib/form-config/settings.server"
 import type { FormPolicyV1 } from "~/lib/form-config/types"
+import {
+  INLINE_MAX_TOTAL_BYTES,
+  inlineRequestFloorBytes,
+} from "~/lib/form-config/upload-limits"
 import { Button } from "~/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card"
 import { Input } from "~/components/ui/input"
@@ -18,8 +22,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
 }
 
 export default function UploadSettings() {
-  const { form, capabilities } =
-    useOutletContext<SettingsOutletContext>()
+  const { form } = useOutletContext<SettingsOutletContext>()
   const fetcher = useFetcher<{ success?: boolean; error?: string }>()
   const [uploads, setUploads] = useState(() => structuredClone(form.policy.uploads))
   const [mimeTypes, setMimeTypes] = useState(
@@ -28,19 +31,27 @@ export default function UploadSettings() {
   const [extensions, setExtensions] = useState(
     uploads.allowedExtensions.join(", ")
   )
+  const isInline = uploads.enabled && uploads.mode === "inline"
+  const requestFloor = inlineRequestFloorBytes(uploads)
+  // The request limit caps the whole multipart body, so inline uploads are only
+  // reachable if it clears the upload set. Raise it here rather than rejecting a
+  // save the operator would have to fix on a different settings page.
+  const maxPayloadBytes = isInline
+    ? Math.max(form.policy.request.maxPayloadBytes, requestFloor)
+    : form.policy.request.maxPayloadBytes
   const policy: FormPolicyV1 = {
     ...form.policy,
     request: {
       ...form.policy.request,
-      allowedContentTypes:
-        uploads.enabled && uploads.mode === "inline"
-          ? [
-              ...new Set([
-                ...form.policy.request.allowedContentTypes,
-                "multipart/form-data" as const,
-              ]),
-            ]
-          : form.policy.request.allowedContentTypes,
+      maxPayloadBytes,
+      allowedContentTypes: isInline
+        ? [
+            ...new Set([
+              ...form.policy.request.allowedContentTypes,
+              "multipart/form-data" as const,
+            ]),
+          ]
+        : form.policy.request.allowedContentTypes,
     },
     uploads: {
       ...uploads,
@@ -64,14 +75,10 @@ export default function UploadSettings() {
         <fetcher.Form method="post" className="space-y-5">
           <input type="hidden" name="revision" value={form.configRevision} />
           <input type="hidden" name="policy" value={JSON.stringify(policy)} />
-          <p className="text-sm text-muted-foreground">
-            R2 capability: {capabilities.uploads ? "Configured" : "Missing"}
-          </p>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
               checked={uploads.enabled}
-              disabled={!capabilities.uploads && !uploads.enabled}
               onChange={(event) =>
                 setUploads((current) => ({
                   ...current,
@@ -161,6 +168,29 @@ export default function UploadSettings() {
               placeholder=".pdf, .png"
             />
           </div>
+          {isInline && (
+            <div className="space-y-1 rounded-md border p-3 text-sm">
+              <p>
+                Request limit:{" "}
+                <span className="font-medium">
+                  {maxPayloadBytes.toLocaleString()} bytes
+                </span>
+              </p>
+              <p className="text-muted-foreground">
+                Inline uploads share the submission request, so saving raises the
+                request limit to cover {uploads.maxFiles} files totalling{" "}
+                {uploads.maxTotalBytes.toLocaleString()} bytes plus multipart
+                overhead.
+              </p>
+              {uploads.maxTotalBytes > INLINE_MAX_TOTAL_BYTES && (
+                <p className="text-destructive">
+                  Inline mode accepts at most{" "}
+                  {INLINE_MAX_TOTAL_BYTES.toLocaleString()} bytes in total.
+                  Switch to direct upload mode for larger files.
+                </p>
+              )}
+            </div>
+          )}
           <p className="text-sm text-muted-foreground">
             File fields:{" "}
             {form.policy.fields

@@ -26,7 +26,7 @@ export async function loader({ context, request }: Route.LoaderArgs) {
 
   // Check if forms exist - if they do, redirect to /forms
   const result = await database
-    .prepare("SELECT id FROM forms LIMIT 1")
+    .prepare("SELECT id FROM forms WHERE deleted_at IS NULL LIMIT 1")
     .first()
 
   if (result) {

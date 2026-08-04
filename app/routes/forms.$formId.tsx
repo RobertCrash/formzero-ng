@@ -29,7 +29,7 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
 
   // Fetch form details
   const result = await database
-    .prepare("SELECT id, name FROM forms WHERE id = ?")
+    .prepare("SELECT id, name FROM forms WHERE id = ? AND deleted_at IS NULL")
     .bind(params.formId)
     .first()
 

@@ -23,8 +23,8 @@ times, Cloudflare Turnstile, and configurable rate-limit profiles.
 view weekly, monthly, and 30-day trends.
 - **CSV exports** — download smaller exports immediately and process larger
 exports in the background.
-- **Email notifications** — configure global SMTP credentials and per-form
-recipients, reply-to fields, and subject templates.
+- **Email notifications** — send through Cloudflare Email Service or your own
+SMTP server, with per-form recipients, reply-to fields, and subject templates.
 - **Signed webhooks** — deliver `submission.created` events over HTTPS with
 HMAC signatures, retries, and delivery history.
 - **File uploads** — support inline multipart uploads and direct upload
@@ -49,14 +49,34 @@ policies, submissions, and delivery state.
 and large generated exports.
 - [Cloudflare Queues](https://developers.cloudflare.com/queues/) processes
 email, webhook, and export jobs.
+- [Cloudflare Email Service](https://developers.cloudflare.com/email-service/)
+delivers notification emails through the `send_email` binding.
 - [Workers Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
 provides per-form abuse controls.
 - A daily Cron Trigger handles retention, expired uploads, and delivery
 recovery.
 
-The base form backend uses D1. R2, Queues, rate-limit bindings, and selected
-secrets enable the corresponding features; the dashboard reports which
-capabilities are configured.
+### Resource bindings are a contract
+
+Every binding declared in `wrangler.jsonc` is required at runtime, and every one
+is available on the Workers Free plan. The Worker reads these names, and they
+must match `wrangler.jsonc` exactly:
+
+| Binding | `wrangler.jsonc` key | Feature |
+| --- | --- | --- |
+| `DB` | `d1_databases` | Users, forms, policies, submissions, delivery state |
+| `UPLOADS` | `r2_buckets` | File uploads and generated exports |
+| `DELIVERY_QUEUE` | `queues.producers` | Background email, webhook, and export jobs |
+| `EMAIL` | `send_email` | Cloudflare email transport |
+| `RATE_LIMIT_STRICT`, `RATE_LIMIT_STANDARD`, `RATE_LIMIT_RELAXED` | `ratelimits` | Per-form abuse controls |
+
+Renaming a binding does not fail the build; it leaves the corresponding feature
+silently unavailable. Form settings show a diagnostics panel naming any binding
+that is missing or bound to the wrong resource type, and `npm run check:config`
+asserts the contract in CI.
+
+What genuinely remains optional is secrets, not bindings: the dashboard reports
+which of those are configured.
 
 ## Local development
 
@@ -84,8 +104,11 @@ Before starting the app, fill in `.dev.vars`:
 
 - `BETTER_AUTH_SECRET` — secret used by Better Auth.
 - `FORMZERO_ENCRYPTION_KEY` — optional; exactly 32 bytes, encoded as 64
-hexadecimal characters or base64. It encrypts SMTP, Turnstile, and webhook
-secrets.
+hexadecimal characters or base64. It encrypts the three kinds of credential
+FormZero stores: custom SMTP passwords, per-form Turnstile secrets, and webhook
+signing secrets. Each of those features is unavailable without it. Email over
+the default Cloudflare transport stores no credentials, so it does not need the
+key.
 - `FORMZERO_PUBLIC_URL` — optional public base URL used for links in
 notification emails.
 - `TURNSTILE_SECRET` — optional global Cloudflare Turnstile secret.
@@ -117,12 +140,55 @@ sign-up.
 The deployment flow clones this repository into your GitHub or GitLab account,
 lets you choose the Worker and resource names, provisions the D1 database, R2
 bucket, and Queues declared in `wrangler.jsonc`, applies the D1 migrations, and
-deploys the Worker.
+deploys the Worker. Keep the binding names as they are; the resource names behind
+them are yours to choose.
 
 The initial deployment prompts only for `BETTER_AUTH_SECRET`. Better Auth
 derives the application URL from incoming requests, so no public URL is needed
 before the first deployment. Keep the generated authentication secret unchanged
 when updating the deployment.
+
+### Enable email sending
+
+Notification emails default to Cloudflare Email Service, which needs a sending
+domain onboarded once:
+
+```bash
+npx wrangler email sending enable <your-domain>
+```
+
+This publishes the SPF, DKIM, and DMARC records Cloudflare needs to sign and
+authenticate outbound mail for that domain. Then open **Settings → Email
+Notifications** in the dashboard and set the sender address to an address on that
+domain. The Cloudflare transport rejects any other sender with
+`E_SENDER_NOT_VERIFIED`.
+
+Two [plan limits](https://developers.cloudflare.com/email-service/platform/pricing/)
+are worth knowing before you point forms at third-party recipients:
+
+- Sending to verified destination addresses in your own Cloudflare account is
+free on every plan, including Workers Free. Notifications that go to the
+operator's own mailbox stay on this path.
+- Sending to arbitrary recipients requires Workers Paid, which includes 3,000
+emails per month. On a free account, a form configured with third-party
+recipients fails — the delivery log names the reason rather than showing a raw
+error code.
+
+To send through your own mail server instead, choose **Custom SMTP server** in
+the same dialog. That path stores an encrypted password, so it also needs
+`FORMZERO_ENCRYPTION_KEY`.
+
+### When a delivery fails
+
+A failing notification is retried with a growing delay for about two hours.
+Failures that cannot be fixed by retrying — an unverified sender, an invalid
+recipient — are marked failed immediately instead of consuming five attempts.
+
+Deliveries that exhaust their retries land in the `formzero-deliveries-dlq` queue,
+whose consumer marks the job as given up on. They appear under **Form settings →
+Notifications → Delivery log** with the reason and a **Retry** button, and the
+daily maintenance run logs how many are waiting, so an unnoticed backlog shows up
+in Workers Logs.
 
 ### Optional post-deployment configuration
 
@@ -130,7 +196,8 @@ After Cloudflare assigns the Worker URL, configure these values only when the
 corresponding features are needed:
 
 ```bash
-# Encrypt stored SMTP, Turnstile, and webhook secrets.
+# Encrypt stored credentials: custom SMTP passwords, per-form Turnstile
+# secrets, and webhook signing secrets.
 openssl rand -hex 32 | npx wrangler secret put FORMZERO_ENCRYPTION_KEY
 
 # Use the deployed HTTPS origin for links in notification emails.
@@ -148,26 +215,37 @@ for details about automatic resource provisioning and repository creation.
 
 ### Manual deployment
 
-To deploy without the button:
+`wrangler.jsonc` declares every resource by name and deliberately commits no
+resource IDs, so Wrangler
+[provisions](https://developers.cloudflare.com/workers/wrangler/configuration/)
+what is missing on the first deploy and keeps it linked afterwards. Do not create
+the resources by hand: `wrangler d1 create formzero` derives the binding name
+from the database name, offers to write a **second** `d1_databases` entry into
+`wrangler.jsonc`, and the resulting `formzero` binding is not the `DB` the Worker
+reads. If you must create resources manually, pass the binding name explicitly
+(`--binding DB`) and decline Wrangler's offer to edit the configuration.
 
-1. Authenticate Wrangler and create the resources named in `wrangler.jsonc`:
+1. Authenticate Wrangler:
   ```bash
    npx wrangler login
-   npx wrangler d1 create formzero
-   npx wrangler r2 bucket create formzero-uploads
-   npx wrangler queues create formzero-deliveries
-   npx wrangler queues create formzero-deliveries-dlq
   ```
-2. Replace the placeholder `database_id` in `wrangler.jsonc` with the ID
-  returned by `wrangler d1 create`. If you choose different resource names,
-   update their bindings in the same file.
-3. Add the required authentication secret with
+2. Add the required authentication secret with
   `npx wrangler secret put BETTER_AUTH_SECRET`.
-4. Build, apply remote D1 migrations, and deploy:
+3. For the **first** deployment, provision and bind the resources, then apply
+   migrations to the database that now exists:
   ```bash
-   npm run deploy
+   npm run deploy:init
   ```
-5. Add any optional values from
+   This briefly exposes the Worker against an unmigrated database, which is
+   harmless on a fresh install with no users. For every later deployment use
+   `npm run deploy`, which applies additive migrations before the new code goes
+   live.
+4. Wrangler writes the provisioned database ID back into your local
+   `wrangler.jsonc`. Discard that change — the binding stays linked without it,
+   and a committed ID would point every fork at your account. `npm run
+   check:config` fails if one is committed.
+5. Enable email sending as described in
+  [Enable email sending](#enable-email-sending), and add any optional values from
   [Optional post-deployment configuration](#optional-post-deployment-configuration).
 
 Review [Cloudflare Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/),
@@ -201,8 +279,8 @@ git push origin main
 ```
 
 Add the `upstream` remote only once. Before pushing, resolve any conflicts by
-preserving the D1, R2, Queue, Worker names, and resource IDs written into the
-generated repository by Cloudflare. The push triggers a production build; its
+preserving the D1, R2, Queue, and Worker names in the generated repository, and
+keep the binding names unchanged. The push triggers a production build; its
 deploy command applies migrations and deploys the updated Worker.
 
 To redeploy the same commit without fetching an update, open the Worker in the
@@ -271,14 +349,24 @@ security fields and tokens are included.
 - `npm test` — run the Vitest suite.
 - `npm run typecheck` — regenerate Cloudflare and route types, then run
 TypeScript checks.
+- `npm run check:config` — assert `wrangler.jsonc` declares exactly the expected
+binding names and commits no `database_id`.
+- `npm run check:advisories` — fail on any high or critical dependency advisory
+that is not recorded in
+[scripts/known-advisories.json](scripts/known-advisories.json), and on any
+recorded one whose review date has passed. Each entry states why the advisory
+does not affect the deployed Worker; entries are not a way to silence findings
+permanently.
+- `npm run deploy:init` — build, deploy, then migrate. Use once, for the first
+deployment, when the database does not exist yet.
 - `npm run deploy` — build, migrate the remote D1 database, and deploy the
-Worker.
+Worker. Use for every later deployment.
 
 
 
 ## Technology
 
-- [Cloudflare Workers](https://developers.cloudflare.com/workers/), D1, R2, Queues, Rate Limiting, Cron Triggers, and Turnstile
+- [Cloudflare Workers](https://developers.cloudflare.com/workers/), D1, R2, Queues, Email Service, Rate Limiting, Cron Triggers, and Turnstile
 - [React 19](https://react.dev/)
 - [React Router 7](https://reactrouter.com/)
 - [Better Auth](https://www.better-auth.com/)

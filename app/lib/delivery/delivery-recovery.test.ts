@@ -24,10 +24,11 @@ describe("queue recovery", () => {
     }
     const { processDeliveryBatch } = await import("./process-batch.server")
 
-    await processDeliveryBatch(
-      { messages: [message] } as never,
-      { DB: db as never }
-    )
+    await processDeliveryBatch({ messages: [message] } as never, {
+      DB: db as never,
+      EMAIL: { send: vi.fn() } as never,
+      UPLOADS: {} as never,
+    })
 
     expect(sql.join("\n")).toContain("status = 'retry'")
     expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 60 })

@@ -1,3 +1,20 @@
+const EXPIRED_FILE_STATUSES =
+  "'temporary', 'completed', 'attached', 'pending_delete', 'failed'"
+
+export async function countExpiredUploads(db: D1Database, now: number) {
+  const row = await db
+    .prepare(`
+      SELECT COUNT(*) AS total
+      FROM submission_files
+      WHERE status IN (${EXPIRED_FILE_STATUSES})
+        AND delete_after IS NOT NULL
+        AND delete_after <= ?
+    `)
+    .bind(now)
+    .first<{ total: number }>()
+  return row?.total ?? 0
+}
+
 export async function cleanupExpiredUploads({
   db,
   bucket,
@@ -5,20 +22,17 @@ export async function cleanupExpiredUploads({
   limit = 100,
 }: {
   db: D1Database
-  bucket?: R2Bucket
+  bucket: R2Bucket
   now?: number
   limit?: number
 }) {
-  if (!bucket) return 0
   const files = await db
     .prepare(`
       SELECT id, object_key
       FROM submission_files
-      WHERE (
-        status IN ('temporary', 'completed', 'attached', 'pending_delete', 'failed')
+      WHERE status IN (${EXPIRED_FILE_STATUSES})
         AND delete_after IS NOT NULL
         AND delete_after <= ?
-      )
       ORDER BY delete_after
       LIMIT ?
     `)
@@ -60,28 +74,52 @@ export async function cleanupExpiredUploads({
   return deleted
 }
 
+/**
+ * Sweeps abandoned direct-upload objects one page at a time.
+ *
+ * This used to walk every page in a single invocation, so a bucket with a large
+ * `_tmp/` prefix could exceed the Worker's CPU budget and lose the whole
+ * maintenance run. Returning the cursor lets the next run continue instead.
+ */
 export async function cleanupOrphanedTemporaryObjects({
   bucket,
   olderThan = Date.now() - 2 * 60 * 60 * 1_000,
+  cursor,
+  maxPages = 4,
+  deadline,
 }: {
-  bucket?: R2Bucket
+  bucket: R2Bucket
   olderThan?: number
+  cursor?: string | null
+  maxPages?: number
+  /** Epoch ms after which no further page is fetched. */
+  deadline?: number
 }) {
-  if (!bucket) return 0
-  let cursor: string | undefined
+  let nextCursor = cursor ?? undefined
   let deleted = 0
-  do {
-    const page = await bucket.list({
+  let truncated = false
+
+  for (let page = 0; page < maxPages; page++) {
+    if (deadline !== undefined && Date.now() >= deadline) {
+      truncated = Boolean(nextCursor)
+      break
+    }
+    const listed = await bucket.list({
       prefix: "_tmp/",
-      cursor,
+      cursor: nextCursor,
       limit: 500,
     })
-    const expired = page.objects.filter(
+    const expired = listed.objects.filter(
       (object) => object.uploaded.getTime() <= olderThan
     )
     await Promise.all(expired.map((object) => bucket.delete(object.key)))
     deleted += expired.length
-    cursor = page.truncated ? page.cursor : undefined
-  } while (cursor)
-  return deleted
+    truncated = listed.truncated
+    nextCursor = listed.truncated ? listed.cursor : undefined
+    if (!listed.truncated) break
+  }
+
+  // A finished sweep clears the cursor so the next run starts from the top and
+  // picks up objects that have since aged out.
+  return { deleted, cursor: nextCursor ?? null, truncated }
 }

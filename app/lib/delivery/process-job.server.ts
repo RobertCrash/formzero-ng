@@ -1,3 +1,4 @@
+import { EmailSendError } from "../email/message"
 import { processEmail } from "./process-email.server"
 import { processWebhook } from "./process-webhook.server"
 import { processExport } from "./process-export.server"
@@ -6,9 +7,19 @@ const retryDelays = [0, 60, 300, 1_800, 7_200]
 
 type DeliveryEnv = {
   DB: D1Database
+  EMAIL: SendEmail
+  UPLOADS: R2Bucket
   FORMZERO_ENCRYPTION_KEY?: string
   FORMZERO_PUBLIC_URL?: string
-  UPLOADS?: R2Bucket
+}
+
+/**
+ * An unverified sender or an invalid recipient fails identically on every
+ * attempt. Retrying it five times delays the real diagnosis and buries the
+ * cause under four duplicate failures.
+ */
+function isTerminal(error: unknown) {
+  return error instanceof EmailSendError && !error.retryable
 }
 
 type DeliveryJobRow = {
@@ -18,6 +29,7 @@ type DeliveryJobRow = {
   submission_id: string | null
   target_id: string | null
   attempt_count: number
+  config_snapshot: string | null
 }
 
 export async function processDeliveryJob(
@@ -44,13 +56,36 @@ export async function processDeliveryJob(
   const job = await env.DB
     .prepare(`
       SELECT
-        id, kind, form_id, submission_id, target_id, attempt_count
+        id, kind, form_id, submission_id, target_id, attempt_count,
+        config_snapshot
       FROM delivery_jobs
       WHERE id = ?
     `)
     .bind(jobId)
     .first<DeliveryJobRow>()
   if (!job || (job.kind !== "export" && !job.submission_id)) return {}
+
+  // Deleting a form fails its queued jobs, but one already in flight would still
+  // mail out or POST the submission data of a form the operator just erased.
+  const form = await env.DB
+    .prepare("SELECT deleted_at FROM forms WHERE id = ?")
+    .bind(job.form_id)
+    .first<{ deleted_at: number | null }>()
+  if (!form || (form.deleted_at ?? null) !== null) {
+    await env.DB
+      .prepare(`
+        UPDATE delivery_jobs
+        SET
+          status = 'failed',
+          last_error = 'Form was deleted.',
+          locked_at = NULL,
+          updated_at = ?
+        WHERE id = ?
+      `)
+      .bind(Date.now(), job.id)
+      .run()
+    return {}
+  }
 
   const attemptId = crypto.randomUUID()
   await env.DB
@@ -120,7 +155,8 @@ export async function processDeliveryJob(
       typeof error.responseStatus === "number"
         ? error.responseStatus
         : null
-    const shouldRetry = job.attempt_count < retryDelays.length
+    const shouldRetry =
+      job.attempt_count < retryDelays.length && !isTerminal(error)
     const retryDelaySeconds =
       retryDelays[Math.min(job.attempt_count, retryDelays.length - 1)]
     await env.DB.batch([

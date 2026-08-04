@@ -69,9 +69,9 @@ describe("dashboard recovery and integration contracts", () => {
     expect(submissionsTable).toContain("Search current page")
   })
 
-  it("allows enabled notifications to be disabled after queue loss", () => {
+  it("allows enabled notifications to be disabled after transport loss", () => {
     expect(notificationSettings).toContain(
-      "disabled={!capabilities.backgroundDelivery && !enabled}"
+      "disabled={!capabilities.emailTransport && !enabled}"
     )
   })
 

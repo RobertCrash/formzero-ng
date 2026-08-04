@@ -53,15 +53,30 @@ export default function FormSettingsLayout() {
           </NavLink>
         ))}
       </nav>
-      <div className="grid gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
+      {!data.platform.ok && (
+        <div className="rounded border border-destructive/50 bg-destructive/5 p-3 text-sm">
+          <p className="font-medium text-destructive">
+            Platform bindings are misconfigured
+          </p>
+          <ul className="mt-2 space-y-1 text-muted-foreground">
+            {data.platform.problems.map((problem) => (
+              <li key={problem.binding}>
+                <code>{problem.binding}</code> is{" "}
+                {problem.present ? "bound to the wrong resource type" : "missing"} —{" "}
+                {problem.feature} is unavailable. Declare it under{" "}
+                <code>{problem.configKey}</code> in <code>wrangler.jsonc</code> with
+                exactly that binding name, then redeploy.
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div className="grid gap-2 text-xs sm:grid-cols-3 lg:grid-cols-5">
         <div className="rounded border p-2">
-          R2: {data.capabilities.uploads ? "Configured" : "Missing"}
+          Email transport: {data.capabilities.emailTransport ? "Configured" : "Not configured"}
         </div>
         <div className="rounded border p-2">
-          Queue: {data.capabilities.backgroundDelivery ? "Configured" : "Missing"}
-        </div>
-        <div className="rounded border p-2">
-          Rate limits: {data.capabilities.rateLimiting ? "Configured" : "Missing"}
+          Credential encryption: {data.capabilities.credentialEncryption ? "Configured" : "Missing"}
         </div>
         <div className="rounded border p-2">
           Files: {data.operations.file_count} ({data.operations.stored_bytes} bytes)

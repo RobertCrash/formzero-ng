@@ -36,6 +36,7 @@ export function AppSidebar({ forms, user, ...props }: AppSidebarProps) {
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settings, setSettings] = useState<SettingsType | null>(null)
+  const [credentialEncryption, setCredentialEncryption] = useState(false)
 
   // Fetch settings when dialog opens
   useEffect(() => {
@@ -46,8 +47,11 @@ export function AppSidebar({ forms, user, ...props }: AppSidebarProps) {
 
   // Update settings when fetcher returns data
   useEffect(() => {
-    if (settingsFetcher.data?.settings) {
-      setSettings(settingsFetcher.data.settings)
+    if (settingsFetcher.data) {
+      setSettings(settingsFetcher.data.settings ?? null)
+      setCredentialEncryption(
+        Boolean(settingsFetcher.data.credentialEncryption)
+      )
     }
   }, [settingsFetcher.data])
 
@@ -104,6 +108,7 @@ export function AppSidebar({ forms, user, ...props }: AppSidebarProps) {
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         settings={settings}
+        credentialEncryption={credentialEncryption}
       />
     </Sidebar>
   )

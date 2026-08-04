@@ -20,13 +20,14 @@ export type Submission = {
   delete_after: number | null
 }
 
+/** Everything the notification template needs. Recipients and sender belong to
+ * the transport, not to the rendered body. */
 export type SubmissionEmailData = {
   id: string
   formId: string
   formName: string
   data: Record<string, any>
   createdAt: number
-  recipients?: string[]
   replyTo?: string
   subject?: string
   fields?: FieldRule[]

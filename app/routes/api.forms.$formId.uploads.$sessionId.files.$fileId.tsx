@@ -1,18 +1,11 @@
 import { data } from "react-router"
 import type { Route } from "./+types/api.forms.$formId.uploads.$sessionId.files.$fileId"
 import { loadFormWithPolicy } from "~/lib/form-config/load-form-policy.server"
+import { limitAndHash } from "~/lib/uploads/limited-stream"
 import {
   resolveCorsHeaders,
   validateOrigin,
 } from "~/lib/submissions/validate-origin"
-
-function checksumHex(value: ArrayBuffer) {
-  return crypto.subtle.digest("SHA-256", value).then((digest) =>
-    [...new Uint8Array(digest)]
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("")
-  )
-}
 
 export async function action({ request, params, context }: Route.ActionArgs) {
   const env = context.cloudflare.env
@@ -58,15 +51,15 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     if (record.origin !== origin) {
       throw new Error("Upload origin does not match the session.")
     }
+    // The session already committed to a size, so anything above it is a
+    // mismatch rather than a policy question. Rejecting on the declared length
+    // avoids reading a body that cannot be accepted.
+    const limit = Math.min(record.size_bytes, form.policy.uploads.maxFileBytes)
     const declaredLength = Number(request.headers.get("Content-Length"))
     if (declaredLength && declaredLength !== record.size_bytes) {
       throw new Error("Uploaded size does not match the declared file size.")
     }
-    const body = await request.arrayBuffer()
-    if (
-      body.byteLength !== record.size_bytes ||
-      body.byteLength > form.policy.uploads.maxFileBytes
-    ) {
+    if (record.size_bytes > form.policy.uploads.maxFileBytes) {
       throw new Error("Uploaded file size is invalid.")
     }
     const contentType =
@@ -74,8 +67,12 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     if (contentType !== record.mime_type) {
       throw new Error("Uploaded MIME type does not match the session.")
     }
-    const checksum = await checksumHex(body)
-    await env.UPLOADS.put(record.object_key, body, {
+    if (!request.body) throw new Error("The upload request has no body.")
+
+    // Hashed and counted while it flows into R2, so nothing larger than the
+    // limit is ever held in the Worker.
+    const upload = limitAndHash(request.body, limit)
+    await env.UPLOADS.put(record.object_key, upload.body, {
       httpMetadata: { contentType },
       customMetadata: {
         formId: form.id,
@@ -83,6 +80,12 @@ export async function action({ request, params, context }: Route.ActionArgs) {
         status: "completed",
       },
     })
+    if (upload.bytesRead() !== record.size_bytes) {
+      // A short body would otherwise leave a truncated object behind.
+      await env.UPLOADS.delete(record.object_key)
+      throw new Error("Uploaded file size is invalid.")
+    }
+    const checksum = await upload.checksum()
     await env.DB
       .prepare(`
         UPDATE submission_files

@@ -34,7 +34,7 @@ export async function loader({ request, params, context }: Route.LoaderArgs) {
 }
 
 export async function action({ request, params, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env as Env & { IP_HASH_SECRET?: string }
+  const env = context.cloudflare.env
   const form = await loadFormWithPolicy(env.DB, params.formId)
   if (!form) return data({ success: false, error: "Form not found." }, { status: 404 })
   const cors = resolveCorsHeaders(request, form.policy.security)
@@ -58,6 +58,9 @@ export async function action({ request, params, context }: Route.ActionArgs) {
       sourceIpHash: requestContext.rateLimitIpHash,
       config: form.policy.security.rateLimit,
       env,
+      // Opening a session is not a submission; charging both to the same bucket
+      // halved the effective submission limit for direct uploads.
+      scope: "upload-session",
     })
     const body = await request.json<UploadRequest>()
     if (

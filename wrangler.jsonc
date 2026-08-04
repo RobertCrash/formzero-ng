@@ -1,7 +1,10 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "formzero",
-	"compatibility_date": "2025-04-04",
+	"compatibility_date": "2026-08-04",
+	// nodejs_compat is required by nodemailer, which backs the optional custom
+	// SMTP transport. The default Cloudflare Email Service transport does not
+	// need it.
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
@@ -9,18 +12,26 @@
 	"observability": {
 		"enabled": true
 	},
+	// database_id is intentionally omitted so forks and Deploy to Cloudflare
+	// clones provision their own database. Wrangler links it on first deploy and
+	// keeps it linked afterwards. Do not commit a database_id.
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "formzero-ng",
-			"database_id": "8aaa6829-2c4c-4eaf-b9a3-1347377a57b0",
-			"migrations_dir": "../../migrations"
+			"database_name": "formzero-ng"
 		}
 	],
 	"r2_buckets": [
 		{
 			"bucket_name": "formzero-ng-uploads",
 			"binding": "UPLOADS"
+		}
+	],
+	// Add "remote": true locally to route wrangler dev sends through the real
+	// Email Service. It is omitted here so a dev server cannot send real mail.
+	"send_email": [
+		{
+			"name": "EMAIL"
 		}
 	],
 	"queues": {
@@ -37,6 +48,15 @@
 				"max_batch_timeout": 5,
 				"max_retries": 5,
 				"dead_letter_queue": "formzero-deliveries-dlq"
+			},
+			// Without a consumer the dead-letter queue only accumulates and expires
+			// messages. This one records the give-up on the delivery job so it is
+			// visible in the dashboard and can be replayed from there.
+			{
+				"queue": "formzero-deliveries-dlq",
+				"max_batch_size": 10,
+				"max_batch_timeout": 30,
+				"max_retries": 1
 			}
 		]
 	},

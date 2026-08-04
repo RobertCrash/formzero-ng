@@ -13,26 +13,16 @@ import { Button } from "~/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card"
 import { Input } from "~/components/ui/input"
 import { Label } from "~/components/ui/label"
-import { deleteFormWithFiles } from "~/lib/uploads/delete-submission.server"
+import { requestFormDeletion } from "~/lib/uploads/delete-form.server"
 
 export async function action({ request, params, context }: Route.ActionArgs) {
   const db = context.cloudflare.env.DB
   await requireAuth(request, db)
 
   if (request.method === "DELETE") {
-    const result = await deleteFormWithFiles({
-      db,
-      bucket: context.cloudflare.env.UPLOADS,
-      formId: params.formId,
-    })
-    if (!result.deleted) {
-      return data(
-        {
-          success: false,
-          error: "Form deletion is pending while attached files are removed.",
-        },
-        { status: 202 }
-      )
+    const result = await requestFormDeletion({ db, formId: params.formId })
+    if (!result.found) {
+      return data({ success: false, error: "Form not found." }, { status: 404 })
     }
     return redirect("/forms")
   }
@@ -156,7 +146,12 @@ export default function GeneralSettings() {
 
       <Card className="border-destructive/50">
         <CardHeader><CardTitle>Danger zone</CardTitle></CardHeader>
-        <CardContent>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            The form stops accepting submissions immediately and disappears from
+            the dashboard. Stored submissions and uploaded files are erased by the
+            next maintenance run.
+          </p>
           <Button
             variant="destructive"
             disabled={deletion.state !== "idle"}

@@ -1,4 +1,5 @@
 import type { FormWithPolicy } from "../form-config/types"
+import { assertBinding } from "../platform/check-bindings.server"
 import type { PreparedSubmissionFile } from "../submissions/create-submission.server"
 import { SubmissionError } from "../submissions/errors"
 import { attachedObjectKey } from "./object-key"
@@ -11,7 +12,7 @@ export async function prepareDirectUploads({
   tokens,
 }: {
   db: D1Database
-  bucket?: R2Bucket
+  bucket: R2Bucket
   form: FormWithPolicy
   tokens: string[]
 }) {
@@ -23,12 +24,7 @@ export async function prepareDirectUploads({
       totalBytes: 0,
     }
   }
-  if (!bucket) {
-    throw new SubmissionError(
-      "capability_unavailable",
-      "Direct uploads require the UPLOADS R2 binding."
-    )
-  }
+  assertBinding(bucket, "UPLOADS")
   if (tokens.length > form.policy.uploads.maxFiles) {
     throw new SubmissionError(
       "file_validation_failed",

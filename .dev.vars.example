@@ -1,7 +1,13 @@
 BETTER_AUTH_SECRET=""
 
 # Optional. Uncomment only the features you use in local development.
+
+# Encrypts the credentials FormZero stores: custom SMTP passwords, per-form
+# Turnstile secrets, and webhook signing secrets. Each of those features is
+# unavailable without it. The default Cloudflare email transport stores no
+# credentials and does not need this key.
 # FORMZERO_ENCRYPTION_KEY=""
+
 # FORMZERO_PUBLIC_URL="http://localhost:5173"
 # TURNSTILE_SECRET=""
 # IP_HASH_SECRET=""
