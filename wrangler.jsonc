@@ -12,6 +12,7 @@
 	"observability": {
 		"enabled": true
 	},
+	"vars": {},
 	// database_id is intentionally omitted so forks and Deploy to Cloudflare
 	// clones provision their own database. Wrangler links it on first deploy and
 	// keeps it linked afterwards. Do not commit a database_id.
