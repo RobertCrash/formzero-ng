@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "formzero",
+	"name": "formzero-ng",
 	"compatibility_date": "2026-08-04",
 	// nodejs_compat is required by nodemailer, which backs the optional custom
 	// SMTP transport. The default Cloudflare Email Service transport does not
@@ -39,22 +39,22 @@
 		"producers": [
 			{
 				"binding": "DELIVERY_QUEUE",
-				"queue": "formzero-deliveries"
+				"queue": "formzero-ng-deliveries"
 			}
 		],
 		"consumers": [
 			{
-				"queue": "formzero-deliveries",
+				"queue": "formzero-ng-deliveries",
 				"max_batch_size": 10,
 				"max_batch_timeout": 5,
 				"max_retries": 5,
-				"dead_letter_queue": "formzero-deliveries-dlq"
+				"dead_letter_queue": "formzero-ng-deliveries-dlq"
 			},
 			// Without a consumer the dead-letter queue only accumulates and expires
 			// messages. This one records the give-up on the delivery job so it is
 			// visible in the dashboard and can be replayed from there.
 			{
-				"queue": "formzero-deliveries-dlq",
+				"queue": "formzero-ng-deliveries-dlq",
 				"max_batch_size": 10,
 				"max_batch_timeout": 30,
 				"max_retries": 1

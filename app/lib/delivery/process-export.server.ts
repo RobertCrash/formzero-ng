@@ -1,6 +1,9 @@
 import { loadFormWithPolicy } from "../form-config/load-form-policy.server"
 import { assertBinding } from "../platform/check-bindings.server"
 
+/** R2 multipart parts must be at least 5 MiB except the final part. */
+const MULTIPART_PART_BYTES = 5 * 1024 * 1024
+
 function csvValue(value: unknown) {
   let text =
     value === null || value === undefined
@@ -12,6 +15,12 @@ function csvValue(value: unknown) {
   return `"${text.replaceAll('"', '""')}"`
 }
 
+/**
+ * Writes unknown-length CSV into R2 via multipart upload.
+ *
+ * A single `put(TransformStream)` fails on Workers because the body has no
+ * known length. Multipart accepts bounded parts and can be aborted on failure.
+ */
 export async function processExport(
   exportJobId: string,
   env: { DB: D1Database; UPLOADS: R2Bucket }
@@ -49,71 +58,90 @@ export async function processExport(
 
   let rowCount = 0
   const objectKey = `exports/${form.id}/${job.id}.csv`
-  const stream = new TransformStream<Uint8Array, Uint8Array>()
-  const writer = stream.writable.getWriter()
+  const multipart = await env.UPLOADS.createMultipartUpload(objectKey, {
+    httpMetadata: { contentType: "text/csv; charset=utf-8" },
+  })
+  const uploadedParts: R2UploadedPart[] = []
+  let partNumber = 1
+  let buffer = new Uint8Array(0)
   const encoder = new TextEncoder()
-  const produceCsv = async () => {
-    let cursorCreatedAt: number | null = null
-    let cursorId: string | null = null
-    try {
-      await writer.write(
-        encoder.encode(
-          `${["ID", "Created At", ...fieldNames].map(csvValue).join(",")}\n`
-        )
-      )
-      while (true) {
-        const statement = env.DB.prepare(`
-          SELECT id, data, created_at
-          FROM submissions
-          WHERE form_id = ?
-            AND status = 'accepted'
-            ${
-              cursorCreatedAt === null
-                ? ""
-                : "AND (created_at < ? OR (created_at = ? AND id < ?))"
-            }
-          ORDER BY created_at DESC, id DESC
-          LIMIT 500
-        `)
-        const page: D1Result<{
-          id: string
-          data: string
-          created_at: number
-        }> = await (
-          cursorCreatedAt === null
-            ? statement.bind(form.id)
-            : statement.bind(form.id, cursorCreatedAt, cursorCreatedAt, cursorId)
-        ).all<{ id: string; data: string; created_at: number }>()
-        for (const row of page.results) {
-          const values = JSON.parse(row.data) as Record<string, unknown>
-          const line = [
-            row.id,
-            new Date(row.created_at).toISOString(),
-            ...fieldNames.map((field) => values[field]),
-          ]
-            .map(csvValue)
-            .join(",")
-          await writer.write(encoder.encode(`${line}\n`))
-          rowCount++
-        }
-        if (page.results.length < 500) break
-        const last: { id: string; data: string; created_at: number } =
-          page.results.at(-1)!
-        cursorCreatedAt = last.created_at
-        cursorId = last.id
-      }
-      await writer.close()
-    } catch (error) {
-      await writer.abort(error)
-      throw error
+
+  const append = async (chunk: Uint8Array) => {
+    if (chunk.byteLength === 0) return
+    const next = new Uint8Array(buffer.byteLength + chunk.byteLength)
+    next.set(buffer)
+    next.set(chunk, buffer.byteLength)
+    buffer = next
+    while (buffer.byteLength >= MULTIPART_PART_BYTES) {
+      const part = buffer.subarray(0, MULTIPART_PART_BYTES)
+      buffer = buffer.subarray(MULTIPART_PART_BYTES)
+      uploadedParts.push(await multipart.uploadPart(partNumber, part))
+      partNumber++
     }
   }
-  await Promise.all([
-    produceCsv(),
-    env.UPLOADS.put(objectKey, stream.readable, {
-    httpMetadata: { contentType: "text/csv; charset=utf-8" },
-    }),
-  ])
+
+  try {
+    await append(
+      encoder.encode(
+        `${["ID", "Created At", ...fieldNames].map(csvValue).join(",")}\n`
+      )
+    )
+
+    let cursorCreatedAt: number | null = null
+    let cursorId: string | null = null
+    while (true) {
+      const statement = env.DB.prepare(`
+        SELECT id, data, created_at
+        FROM submissions
+        WHERE form_id = ?
+          AND status = 'accepted'
+          ${
+            cursorCreatedAt === null
+              ? ""
+              : "AND (created_at < ? OR (created_at = ? AND id < ?))"
+          }
+        ORDER BY created_at DESC, id DESC
+        LIMIT 500
+      `)
+      const page: D1Result<{
+        id: string
+        data: string
+        created_at: number
+      }> = await (
+        cursorCreatedAt === null
+          ? statement.bind(form.id)
+          : statement.bind(form.id, cursorCreatedAt, cursorCreatedAt, cursorId)
+      ).all<{ id: string; data: string; created_at: number }>()
+      for (const row of page.results) {
+        const values = JSON.parse(row.data) as Record<string, unknown>
+        const line = [
+          row.id,
+          new Date(row.created_at).toISOString(),
+          ...fieldNames.map((field) => values[field]),
+        ]
+          .map(csvValue)
+          .join(",")
+        await append(encoder.encode(`${line}\n`))
+        rowCount++
+      }
+      if (page.results.length < 500) break
+      const last: { id: string; data: string; created_at: number } =
+        page.results.at(-1)!
+      cursorCreatedAt = last.created_at
+      cursorId = last.id
+    }
+
+    if (buffer.byteLength > 0 || uploadedParts.length === 0) {
+      // Final part may be smaller than 5 MiB. An empty export still needs one
+      // part so complete() has something to finish.
+      uploadedParts.push(await multipart.uploadPart(partNumber, buffer))
+    }
+    await multipart.complete(uploadedParts)
+  } catch (error) {
+    await multipart.abort().catch(() => {})
+    throw error
+  }
+
   const completedAt = Date.now()
   await env.DB
     .prepare(`

@@ -163,7 +163,7 @@ export async function purgeDeletedForms({
       deadline,
     })
 
-    const remaining = await db
+    const remainingFiles = await db
       .prepare(`
         SELECT COUNT(*) AS total
         FROM submission_files
@@ -171,8 +171,20 @@ export async function purgeDeletedForms({
       `)
       .bind(form.id)
       .first<{ total: number }>()
+    const remainingExports = await db
+      .prepare(`
+        SELECT COUNT(*) AS total
+        FROM export_jobs
+        WHERE form_id = ? AND object_key IS NOT NULL
+      `)
+      .bind(form.id)
+      .first<{ total: number }>()
     // Anything left means the deadline cut the page short; the next run resumes.
-    if ((remaining?.total ?? 0) > 0) continue
+    // Both tables must be clear before deleting the form: cascading away
+    // export_jobs would lose the keys needed to find leftover R2 objects.
+    if ((remainingFiles?.total ?? 0) > 0 || (remainingExports?.total ?? 0) > 0) {
+      continue
+    }
 
     // Submissions, files, delivery jobs, webhooks, secrets, upload sessions,
     // settings and exports all cascade from this one statement.

@@ -8,12 +8,6 @@ import {
 import { normalizeTransport } from "~/lib/email/transport.server"
 import type { EmailTransportKind } from "~/lib/email/message"
 
-const ENCRYPTION_KEY_HELP =
-  "Custom SMTP stores the password encrypted, which needs FORMZERO_ENCRYPTION_KEY. " +
-  "Set it with `openssl rand -hex 32 | npx wrangler secret put FORMZERO_ENCRYPTION_KEY` " +
-  "(or add it to .dev.vars locally), or use the Cloudflare Email Service transport, " +
-  "which stores no credentials."
-
 function isEmailAddress(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
 }
@@ -46,9 +40,6 @@ export async function loader({ context, request }: Route.LoaderArgs) {
 
   return data({
     settings: settings || null,
-    credentialEncryption: Boolean(
-      context.cloudflare.env.FORMZERO_ENCRYPTION_KEY
-    ),
   })
 }
 
@@ -194,15 +185,6 @@ export async function action({ request, context }: Route.ActionArgs) {
 
     let newSecretId: string | null = null
     if (notification_email_password) {
-      if (!encryptionKey) {
-        return data(
-          {
-            success: false,
-            error: `FORMZERO_ENCRYPTION_KEY is required to save SMTP credentials. ${ENCRYPTION_KEY_HELP}`,
-          },
-          { status: 503 }
-        )
-      }
       newSecretId = await putSecret({
         db: database,
         encryptionKey,

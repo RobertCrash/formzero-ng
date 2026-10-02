@@ -114,12 +114,6 @@ export async function action({ request, params, context }: Route.ActionArgs) {
         { status: 400 }
       )
     }
-    if (!env.FORMZERO_ENCRYPTION_KEY) {
-      return data(
-        { success: false, error: "FORMZERO_ENCRYPTION_KEY is not configured." },
-        { status: 503 }
-      )
-    }
     const id = crypto.randomUUID()
     const secret = generateSigningSecret()
     const secretId = await putSecret({
@@ -176,12 +170,6 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   }
 
   if (intent === "rotate") {
-    if (!env.FORMZERO_ENCRYPTION_KEY) {
-      return data(
-        { success: false, error: "FORMZERO_ENCRYPTION_KEY is not configured." },
-        { status: 503 }
-      )
-    }
     const secret = generateSigningSecret()
     await putSecret({
       db: env.DB,

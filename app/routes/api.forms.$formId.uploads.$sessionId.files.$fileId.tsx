@@ -7,11 +7,24 @@ import {
   validateOrigin,
 } from "~/lib/submissions/validate-origin"
 
+const CORS_METHODS = ["PUT", "OPTIONS"]
+
+export async function loader({ request, params, context }: Route.LoaderArgs) {
+  const form = await loadFormWithPolicy(context.cloudflare.env.DB, params.formId)
+  const headers = form
+    ? resolveCorsHeaders(request, form.policy.security, CORS_METHODS)
+    : new Headers({ Vary: "Origin" })
+  return new Response(null, {
+    status: request.method === "OPTIONS" ? (form ? 204 : 404) : 405,
+    headers,
+  })
+}
+
 export async function action({ request, params, context }: Route.ActionArgs) {
   const env = context.cloudflare.env
   const form = await loadFormWithPolicy(env.DB, params.formId)
   if (!form) return data({ success: false, error: "Form not found." }, { status: 404 })
-  const cors = resolveCorsHeaders(request, form.policy.security)
+  const cors = resolveCorsHeaders(request, form.policy.security, CORS_METHODS)
   if (request.method !== "PUT") {
     return data(
       { success: false, error: "Method not allowed." },
@@ -70,8 +83,9 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     if (!request.body) throw new Error("The upload request has no body.")
 
     // Hashed and counted while it flows into R2, so nothing larger than the
-    // limit is ever held in the Worker.
-    const upload = limitAndHash(request.body, limit)
+    // limit is ever held in the Worker. FixedLengthStream advertises the
+    // session size so R2 accepts the transformed body.
+    const upload = limitAndHash(request.body, limit, record.size_bytes)
     await env.UPLOADS.put(record.object_key, upload.body, {
       httpMetadata: { contentType },
       customMetadata: {

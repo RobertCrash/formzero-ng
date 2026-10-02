@@ -30,9 +30,13 @@ export async function uploadInlineFiles({
     for (const { fieldName, file } of validation.files) {
       const id = crypto.randomUUID()
       const objectKey = attachedObjectKey(form.id, id)
-      // validateFiles already checked file.size, so the limit here is a
-      // belt-and-braces cap on the actual bytes rather than the declared ones.
-      const upload = limitAndHash(file.stream(), form.policy.uploads.maxFileBytes)
+      // validateFiles already checked file.size; expectedBytes tells R2 the
+      // length, and the limiter still rejects anything larger than maxFileBytes.
+      const upload = limitAndHash(
+        file.stream(),
+        form.policy.uploads.maxFileBytes,
+        file.size
+      )
       await bucket.put(objectKey, upload.body, {
         httpMetadata: { contentType: file.type || "application/octet-stream" },
         customMetadata: {
@@ -41,6 +45,10 @@ export async function uploadInlineFiles({
           status: "temporary",
         },
       })
+      if (upload.bytesRead() !== file.size) {
+        await bucket.delete(objectKey)
+        throw new Error("Uploaded file size is invalid.")
+      }
       prepared.push({
         id,
         fieldName,

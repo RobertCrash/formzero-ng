@@ -52,7 +52,7 @@ export async function loadEmailSettings(
 
 type TransportEnv = {
   EMAIL: SendEmail
-  FORMZERO_ENCRYPTION_KEY?: string
+  FORMZERO_ENCRYPTION_KEY: string
 }
 
 /**

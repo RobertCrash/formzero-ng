@@ -71,12 +71,9 @@ export default function FormSettingsLayout() {
           </ul>
         </div>
       )}
-      <div className="grid gap-2 text-xs sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded border p-2">
           Email transport: {data.capabilities.emailTransport ? "Configured" : "Not configured"}
-        </div>
-        <div className="rounded border p-2">
-          Credential encryption: {data.capabilities.credentialEncryption ? "Configured" : "Missing"}
         </div>
         <div className="rounded border p-2">
           Files: {data.operations.file_count} ({data.operations.stored_bytes} bytes)

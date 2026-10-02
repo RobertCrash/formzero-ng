@@ -6,21 +6,21 @@ import type { FormPolicyV1 } from "./types"
  * Every binding declared in wrangler.jsonc is guaranteed present at runtime, so
  * a missing binding is a deployment fault surfaced by checkPlatformBindings —
  * not a feature the operator chose to leave off. What genuinely varies is
- * secrets (set with `wrangler secret put`) and stored configuration.
+ * optional secrets (TURNSTILE_SECRET) and stored configuration.
+ *
+ * FORMZERO_ENCRYPTION_KEY and FORMZERO_HASH_SECRET are required on AppEnv, so
+ * credential encryption, form-owned Turnstile secrets, and rate limiting are
+ * always available — they are not capability flags.
  */
 type CapabilityEnv = {
   TURNSTILE_SECRET?: string
-  FORMZERO_ENCRYPTION_KEY?: string
-  IP_HASH_SECRET?: string
 }
 
 export type Capabilities = {
-  credentialEncryption: boolean
   /** An account-wide TURNSTILE_SECRET any form can verify against. */
   turnstileAccountSecret: boolean
-  /** Whether Turnstile can be set up at all, by either route. */
+  /** Whether Turnstile can be set up at all (always true: form secrets are storable). */
   turnstile: boolean
-  ipHashing: boolean
   scheduledMaintenance: boolean
   emailTransport: boolean
 }
@@ -29,17 +29,12 @@ export function getCapabilities(
   env: CapabilityEnv,
   options: { emailTransport?: boolean } = {}
 ): Capabilities {
-  const credentialEncryption = Boolean(env.FORMZERO_ENCRYPTION_KEY)
   const turnstileAccountSecret = Boolean(env.TURNSTILE_SECRET)
   return {
-    credentialEncryption,
     turnstileAccountSecret,
-    // Two routes to a verifiable captcha: the account secret, or a form-owned
-    // secret — which needs the encryption key to be stored and read back. The
-    // key alone is not a Turnstile secret, so it only says a form *could* save
-    // one; whether a given form actually has is checked per policy below.
-    turnstile: turnstileAccountSecret || credentialEncryption,
-    ipHashing: Boolean(env.IP_HASH_SECRET),
+    // Form-owned secrets are always storable (FORMZERO_ENCRYPTION_KEY is required).
+    // Whether a given form actually has one is checked per policy below.
+    turnstile: true,
     scheduledMaintenance: true,
     emailTransport: options.emailTransport ?? false,
   }
@@ -65,14 +60,6 @@ export function resolveCaptchaSecretSource(
       return {
         source: null,
         reason: "Turnstile is set to use a form-owned secret, but none is saved.",
-      }
-    }
-    if (!env.FORMZERO_ENCRYPTION_KEY) {
-      return {
-        source: null,
-        reason:
-          "The saved Turnstile secret cannot be decrypted because " +
-          "FORMZERO_ENCRYPTION_KEY is not set on this deployment.",
       }
     }
     return { source: "form" }

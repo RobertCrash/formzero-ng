@@ -12,7 +12,7 @@ type SmtpSettingsRow = {
 
 /**
  * Loads the stored SMTP connection, migrating a legacy plaintext password into
- * the encrypted secret store when a key is available.
+ * the encrypted secret store.
  *
  * The sender address is deliberately not read here: it lives in
  * settings.email_from_address, is shared by both transports, and the superseded
@@ -23,7 +23,7 @@ export async function loadSmtpConfig({
   encryptionKey,
 }: {
   db: D1Database
-  encryptionKey?: string
+  encryptionKey: string
 }): Promise<EmailConfig | null> {
   const settings = await db
     .prepare(`
@@ -49,30 +49,28 @@ export async function loadSmtpConfig({
 
   let password: string | null = null
   let secretId = settings.smtp_secret_id
-  if (secretId && encryptionKey) {
+  if (secretId) {
     password = await getSecret({ db, encryptionKey, secretId })
   } else if (settings.notification_email_password) {
     password = settings.notification_email_password
-    if (encryptionKey) {
-      secretId = await putSecret({
-        db,
-        encryptionKey,
-        formId: null,
-        purpose: "smtp_password",
-        value: password,
-      })
-      await db
-        .prepare(`
-          UPDATE settings
-          SET
-            smtp_secret_id = ?,
-            notification_email_password = NULL,
-            updated_at = ?
-          WHERE id = 'global'
-        `)
-        .bind(secretId, Date.now())
-        .run()
-    }
+    secretId = await putSecret({
+      db,
+      encryptionKey,
+      formId: null,
+      purpose: "smtp_password",
+      value: password,
+    })
+    await db
+      .prepare(`
+        UPDATE settings
+        SET
+          smtp_secret_id = ?,
+          notification_email_password = NULL,
+          updated_at = ?
+        WHERE id = 'global'
+      `)
+      .bind(secretId, Date.now())
+      .run()
   }
 
   if (!password) return null

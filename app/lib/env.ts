@@ -9,15 +9,19 @@ export type AppEnv = Env & {
   /** Required by Better Auth. Absence breaks sign-in, not an optional feature. */
   BETTER_AUTH_SECRET: string
   /**
-   * Encrypts stored credentials: custom SMTP passwords, per-form Turnstile
-   * secrets, and webhook signing secrets. Not needed for the Cloudflare email
-   * transport.
+   * Required AES key (exactly 32 bytes, hex or base64) for stored credentials:
+   * custom SMTP passwords, per-form Turnstile secrets, and webhook signing
+   * secrets.
    */
-  FORMZERO_ENCRYPTION_KEY?: string
+  FORMZERO_ENCRYPTION_KEY: string
+  /**
+   * Required instance-wide HMAC secret for keyed hashes of request/privacy
+   * metadata. Today: client IP for rate-limit keys and (when a form opts in
+   * via ipMode) source_ip_hash storage. Not used for auth credentials.
+   */
+  FORMZERO_HASH_SECRET: string
   /** Public origin used for file links in notification emails. */
   FORMZERO_PUBLIC_URL?: string
   /** Account-wide Turnstile secret, used when a form has no own credential. */
   TURNSTILE_SECRET?: string
-  /** HMAC secret for hashed IP storage and IP-based rate limiting. */
-  IP_HASH_SECRET?: string
 }

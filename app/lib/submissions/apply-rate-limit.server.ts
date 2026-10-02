@@ -47,7 +47,7 @@ export async function applyRateLimit({
   if (!sourceIpHash) {
     throw new SubmissionError(
       "capability_unavailable",
-      "Rate limiting requires IP_HASH_SECRET and a client IP address."
+      "Rate limiting requires a client IP address."
     )
   }
   const subject =

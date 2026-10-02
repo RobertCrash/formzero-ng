@@ -5,6 +5,10 @@
  * R2, and `crypto.subtle.digest` needed the whole body again — so a 10 MB file
  * cost at least 20 MB of Worker memory, with the size limit checked only after
  * the bytes had already been accepted.
+ *
+ * R2 also rejects ordinary TransformStream bodies ("must have a known length").
+ * The final hop therefore goes through FixedLengthStream so the advertised size
+ * matches the bytes that will actually be written.
  */
 
 export class ByteLimitExceededError extends Error {
@@ -49,14 +53,49 @@ function toHex(digest: ArrayBuffer) {
     .join("")
 }
 
+type DigestStreamLike = WritableStream<ArrayBuffer | ArrayBufferView> & {
+  digest: Promise<ArrayBuffer>
+}
+
+function createSha256DigestStream(): DigestStreamLike {
+  // Workers expose DigestStream on crypto, not as a bare global.
+  const ctor = (
+    globalThis.crypto as Crypto & {
+      DigestStream?: new (algorithm: string) => DigestStreamLike
+    }
+  ).DigestStream
+  if (!ctor) {
+    throw new Error("crypto.DigestStream is required for hashed uploads.")
+  }
+  return new ctor("SHA-256")
+}
+
+function withKnownLength(
+  stream: ReadableStream<Uint8Array>,
+  expectedBytes: number
+): ReadableStream<Uint8Array> {
+  // Node unit tests do not ship FixedLengthStream; production Workers always do.
+  if (typeof FixedLengthStream === "undefined") return stream
+  return stream.pipeThrough(new FixedLengthStream(expectedBytes))
+}
+
 /**
  * A limiter that also hashes in the same pass.
  *
- * `DigestStream` is a Workers global; unlike `crypto.subtle.digest` it accepts
- * data incrementally, which is what makes a single pass possible.
+ * `crypto.DigestStream` accepts data incrementally (unlike `crypto.subtle.digest`),
+ * which is what makes a single pass possible. The returned body is wrapped so R2
+ * sees a known length equal to `expectedBytes`.
  */
-export function limitAndHash(source: ReadableStream<Uint8Array>, maxBytes: number) {
-  const digest = new DigestStream("SHA-256")
+export function limitAndHash(
+  source: ReadableStream<Uint8Array>,
+  maxBytes: number,
+  expectedBytes: number
+) {
+  if (expectedBytes < 0 || expectedBytes > maxBytes) {
+    throw new ByteLimitExceededError(maxBytes)
+  }
+
+  const digest = createSha256DigestStream()
   const writer = digest.getWriter()
   const limiter = createByteLimiter(maxBytes)
 
@@ -74,8 +113,10 @@ export function limitAndHash(source: ReadableStream<Uint8Array>, maxBytes: numbe
     },
   })
 
+  const limited = source.pipeThrough(limiter.stream).pipeThrough(hashing)
+
   return {
-    body: source.pipeThrough(limiter.stream).pipeThrough(hashing),
+    body: withKnownLength(limited, expectedBytes),
     bytesRead: limiter.bytesRead,
     checksum: async () => toHex(await digest.digest),
   }

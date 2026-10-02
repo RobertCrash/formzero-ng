@@ -51,7 +51,8 @@ const SETTINGS_SELECT = "email_transport"
 describe("loadSmtpConfig", () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it("returns null when a stored secret cannot be decrypted without a key", async () => {
+  it("returns null when a stored secret cannot be decrypted", async () => {
+    mocks.getSecret.mockResolvedValue(null)
     const { loadSmtpConfig } = await import("../delivery/smtp-config.server")
     const db = fakeDb([
       {
@@ -67,8 +68,10 @@ describe("loadSmtpConfig", () => {
       },
     ])
 
-    await expect(loadSmtpConfig({ db })).resolves.toBeNull()
-    expect(mocks.getSecret).not.toHaveBeenCalled()
+    await expect(
+      loadSmtpConfig({ db, encryptionKey: "00".repeat(32) })
+    ).resolves.toBeNull()
+    expect(mocks.getSecret).toHaveBeenCalledOnce()
   })
 
   it("migrates a legacy plaintext password into the secret store", async () => {
@@ -105,7 +108,7 @@ describe("loadSmtpConfig", () => {
   it("does not read the superseded smtp_from_* columns", async () => {
     const { loadSmtpConfig } = await import("../delivery/smtp-config.server")
     const db = fakeDb([{ match: SMTP_SELECT, first: null }])
-    await loadSmtpConfig({ db })
+    await loadSmtpConfig({ db, encryptionKey: "00".repeat(32) })
     expect(db.statements).toHaveLength(0)
   })
 })
@@ -114,6 +117,7 @@ describe("resolveEmailTransport", () => {
   beforeEach(() => vi.clearAllMocks())
 
   const email = { send: vi.fn() } as unknown as SendEmail
+  const encryptionKey = "00".repeat(32)
 
   it("selects Cloudflare when a sender address is configured", async () => {
     const { resolveEmailTransport } = await import("./transport.server")
@@ -130,7 +134,10 @@ describe("resolveEmailTransport", () => {
       },
     ])
 
-    const transport = await resolveEmailTransport({ env: { EMAIL: email }, db })
+    const transport = await resolveEmailTransport({
+      env: { EMAIL: email, FORMZERO_ENCRYPTION_KEY: encryptionKey },
+      db,
+    })
 
     expect(transport?.kind).toBe("cloudflare")
     expect(transport?.from).toEqual({
@@ -155,7 +162,10 @@ describe("resolveEmailTransport", () => {
     ])
 
     await expect(
-      resolveEmailTransport({ env: { EMAIL: email }, db })
+      resolveEmailTransport({
+        env: { EMAIL: email, FORMZERO_ENCRYPTION_KEY: encryptionKey },
+        db,
+      })
     ).resolves.toBeNull()
   })
 
@@ -187,7 +197,7 @@ describe("resolveEmailTransport", () => {
     ])
 
     const transport = await resolveEmailTransport({
-      env: { EMAIL: email, FORMZERO_ENCRYPTION_KEY: "00".repeat(32) },
+      env: { EMAIL: email, FORMZERO_ENCRYPTION_KEY: encryptionKey },
       db,
     })
 
@@ -196,7 +206,8 @@ describe("resolveEmailTransport", () => {
     expect(transport?.from).toEqual({ email: "ops@example.com" })
   })
 
-  it("returns null for SMTP with no encryption key", async () => {
+  it("returns null for SMTP when the stored password cannot be read", async () => {
+    mocks.getSecret.mockResolvedValue(null)
     const { resolveEmailTransport } = await import("./transport.server")
     const db = fakeDb([
       {
@@ -223,7 +234,10 @@ describe("resolveEmailTransport", () => {
     ])
 
     await expect(
-      resolveEmailTransport({ env: { EMAIL: email }, db })
+      resolveEmailTransport({
+        env: { EMAIL: email, FORMZERO_ENCRYPTION_KEY: encryptionKey },
+        db,
+      })
     ).resolves.toBeNull()
   })
 
@@ -232,7 +246,10 @@ describe("resolveEmailTransport", () => {
     const db = fakeDb([{ match: SETTINGS_SELECT, first: null }])
 
     await expect(
-      resolveEmailTransport({ env: { EMAIL: email }, db })
+      resolveEmailTransport({
+        env: { EMAIL: email, FORMZERO_ENCRYPTION_KEY: encryptionKey },
+        db,
+      })
     ).resolves.toBeNull()
   })
 })

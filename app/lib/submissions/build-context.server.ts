@@ -1,7 +1,7 @@
 import type { FormPolicyV1 } from "../form-config/types"
 
 type ContextEnv = {
-  IP_HASH_SECRET?: string
+  FORMZERO_HASH_SECRET: string
 }
 
 function toHex(bytes: ArrayBuffer) {
@@ -10,7 +10,8 @@ function toHex(bytes: ArrayBuffer) {
     .join("")
 }
 
-export async function createIpHmac(value: string, secret: string) {
+/** HMAC-SHA-256 hex digest keyed by FORMZERO_HASH_SECRET. */
+export async function createKeyedHash(value: string, secret: string) {
   const encoder = new TextEncoder()
   const key = await crypto.subtle.importKey(
     "raw",
@@ -49,10 +50,9 @@ export async function buildSubmissionContext({
     }
   ).cf
   const observedIp = request.headers.get("CF-Connecting-IP")
-  const sourceIpHash =
-    observedIp && env.IP_HASH_SECRET
-      ? await createIpHmac(observedIp, env.IP_HASH_SECRET)
-      : null
+  const sourceIpHash = observedIp
+    ? await createKeyedHash(observedIp, env.FORMZERO_HASH_SECRET)
+    : null
   const rawContentLength = request.headers.get("Content-Length")
   const contentLength =
     rawContentLength && /^\d+$/.test(rawContentLength)

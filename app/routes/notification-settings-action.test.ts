@@ -54,7 +54,7 @@ type ActionResult = {
 async function invoke(
   request: Request,
   db: ReturnType<typeof fakeDb>,
-  encryptionKey?: string
+  encryptionKey = "00".repeat(32)
 ): Promise<ActionResult> {
   return import("./settings.notifications").then(({ action }) =>
     action({
@@ -118,8 +118,7 @@ describe("global notification settings", () => {
         smtp_host: "smtp.example.com",
         smtp_port: "587",
       }),
-      db,
-      "00".repeat(32)
+      db
     )
 
     const update = db.statements.find((statement) =>
@@ -128,25 +127,6 @@ describe("global notification settings", () => {
     expect(update!.sql).toContain("notification_email_password = NULL")
     expect(update!.values).toContain("secret-new")
     expect(mocks.putSecret).toHaveBeenCalledOnce()
-  })
-
-  it("names FORMZERO_ENCRYPTION_KEY when SMTP credentials cannot be stored", async () => {
-    const db = fakeDb(legacyRow)
-
-    const result = await invoke(
-      saveRequest({
-        email_transport: "smtp",
-        notification_email: "ops@example.com",
-        notification_email_password: "fresh-password",
-        smtp_host: "smtp.example.com",
-        smtp_port: "587",
-      }),
-      db
-    )
-
-    expect(result.init?.status).toBe(503)
-    expect(result.data.error).toContain("FORMZERO_ENCRYPTION_KEY")
-    expect(result.data.error).toContain("wrangler secret put")
   })
 
   it("saves the Cloudflare transport without any SMTP field", async () => {

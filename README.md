@@ -103,20 +103,18 @@ npm run dev
 Before starting the app, fill in `.dev.vars`:
 
 - `BETTER_AUTH_SECRET` — secret used by Better Auth.
-- `FORMZERO_ENCRYPTION_KEY` — optional; exactly 32 bytes, encoded as 64
-hexadecimal characters or base64. It encrypts the three kinds of credential
-FormZero stores: custom SMTP passwords, per-form Turnstile secrets, and webhook
-signing secrets. Each of those features is unavailable without it. Email over
-the default Cloudflare transport stores no credentials, so it does not need the
-key.
+- `FORMZERO_ENCRYPTION_KEY` — required; exactly 32 bytes, encoded as 64
+hexadecimal characters or base64. Encrypts stored credentials: custom SMTP
+passwords, per-form Turnstile secrets, and webhook signing secrets.
+- `FORMZERO_HASH_SECRET` — required; HMAC secret for keyed hashes of
+request/privacy metadata. Used for rate-limit keys and, when a form's IP
+storage mode opts in, for `source_ip_hash`. Not used for login credentials.
 - `FORMZERO_PUBLIC_URL` — optional public base URL used for links in
 notification emails.
 - `TURNSTILE_SECRET` — optional global Cloudflare Turnstile secret.
-- `IP_HASH_SECRET` — HMAC secret for hashed IP storage and IP-based rate
-limiting.
 
-Generate `BETTER_AUTH_SECRET`, `FORMZERO_ENCRYPTION_KEY`, and `IP_HASH_SECRET`
-locally with:
+Generate `BETTER_AUTH_SECRET`, `FORMZERO_ENCRYPTION_KEY`, and
+`FORMZERO_HASH_SECRET` locally with:
 
 ```bash
 openssl rand -hex 32
@@ -124,7 +122,7 @@ openssl rand -hex 32
 
 Alternatively, use [JWT Secrets](https://jwtsecrets.com/) to generate a
 different 256-bit hexadecimal value for `BETTER_AUTH_SECRET` and
-`IP_HASH_SECRET`.
+`FORMZERO_HASH_SECRET`.
 
 Use a different generated value for each one. Obtain `TURNSTILE_SECRET` from
 Cloudflare if you enable Turnstile. `.dev.vars` is ignored by Git.
@@ -143,10 +141,13 @@ bucket, and Queues declared in `wrangler.jsonc`, applies the D1 migrations, and
 deploys the Worker. Keep the binding names as they are; the resource names behind
 them are yours to choose.
 
-The initial deployment prompts only for `BETTER_AUTH_SECRET`. Better Auth
-derives the application URL from incoming requests, so no public URL is needed
-before the first deployment. Keep the generated authentication secret unchanged
-when updating the deployment.
+The initial deployment prompts for `BETTER_AUTH_SECRET`,
+`FORMZERO_ENCRYPTION_KEY`, and `FORMZERO_HASH_SECRET`. Better Auth derives the
+application URL from incoming requests, so no public URL is needed before the
+first deployment. Keep those secrets unchanged when updating the deployment.
+If you previously set `IP_HASH_SECRET`, migrate it with
+`npx wrangler secret put FORMZERO_HASH_SECRET` (reuse the same value so existing
+hashes stay comparable) and delete the old secret.
 
 ### Enable email sending
 
@@ -175,7 +176,7 @@ recipients fails — the delivery log names the reason rather than showing a raw
 error code.
 
 To send through your own mail server instead, choose **Custom SMTP server** in
-the same dialog. That path stores an encrypted password, so it also needs
+the same dialog. That path stores an encrypted password using
 `FORMZERO_ENCRYPTION_KEY`.
 
 ### When a delivery fails
@@ -184,7 +185,7 @@ A failing notification is retried with a growing delay for about two hours.
 Failures that cannot be fixed by retrying — an unverified sender, an invalid
 recipient — are marked failed immediately instead of consuming five attempts.
 
-Deliveries that exhaust their retries land in the `formzero-deliveries-dlq` queue,
+Deliveries that exhaust their retries land in the `formzero-ng-deliveries-dlq` queue,
 whose consumer marks the job as given up on. They appear under **Form settings →
 Notifications → Delivery log** with the reason and a **Retry** button, and the
 daily maintenance run logs how many are waiting, so an unnoticed backlog shows up
@@ -196,18 +197,14 @@ After Cloudflare assigns the Worker URL, configure these values only when the
 corresponding features are needed:
 
 ```bash
-# Encrypt stored credentials: custom SMTP passwords, per-form Turnstile
-# secrets, and webhook signing secrets.
-openssl rand -hex 32 | npx wrangler secret put FORMZERO_ENCRYPTION_KEY
-
 # Use the deployed HTTPS origin for links in notification emails.
 npx wrangler secret put FORMZERO_PUBLIC_URL
 ```
 
 Enter the deployed origin without a trailing slash when prompted for
 `FORMZERO_PUBLIC_URL`. `TURNSTILE_SECRET` remains optional because a Turnstile
-key can be configured per form later. `IP_HASH_SECRET` is recommended for
-hashed-IP storage and IP-based rate limiting.
+key can be configured per form later. Whether hashed IPs are stored is a per-form
+setting under **Security → IP storage**, not a deployment secret.
 
 See Cloudflare's
 [Deploy to Cloudflare documentation](https://developers.cloudflare.com/workers/platform/deploy-buttons/)
@@ -219,9 +216,9 @@ for details about automatic resource provisioning and repository creation.
 resource IDs, so Wrangler
 [provisions](https://developers.cloudflare.com/workers/wrangler/configuration/)
 what is missing on the first deploy and keeps it linked afterwards. Do not create
-the resources by hand: `wrangler d1 create formzero` derives the binding name
+the resources by hand: `wrangler d1 create formzero-ng` derives the binding name
 from the database name, offers to write a **second** `d1_databases` entry into
-`wrangler.jsonc`, and the resulting `formzero` binding is not the `DB` the Worker
+`wrangler.jsonc`, and the resulting `formzero-ng` binding is not the `DB` the Worker
 reads. If you must create resources manually, pass the binding name explicitly
 (`--binding DB`) and decline Wrangler's offer to edit the configuration.
 

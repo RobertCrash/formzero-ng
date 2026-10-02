@@ -10,7 +10,7 @@ import { parseDeliverySnapshot } from "./config-snapshot"
 type EmailEnv = {
   DB: D1Database
   EMAIL: SendEmail
-  FORMZERO_ENCRYPTION_KEY?: string
+  FORMZERO_ENCRYPTION_KEY: string
   FORMZERO_PUBLIC_URL?: string
 }
 

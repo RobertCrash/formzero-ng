@@ -3,7 +3,7 @@ import { signWebhookPayload } from "./webhook-signature"
 
 type WebhookEnv = {
   DB: D1Database
-  FORMZERO_ENCRYPTION_KEY?: string
+  FORMZERO_ENCRYPTION_KEY: string
 }
 
 type WebhookJob = {
@@ -130,9 +130,6 @@ export async function processWebhook(job: WebhookJob, env: WebhookEnv) {
       created_at: number
     }>()
   if (!webhook) throw new Error("Webhook target no longer exists.")
-  if (!env.FORMZERO_ENCRYPTION_KEY) {
-    throw new Error("FORMZERO_ENCRYPTION_KEY is not configured.")
-  }
   const secret = await getSecret({
     db: env.DB,
     encryptionKey: env.FORMZERO_ENCRYPTION_KEY,

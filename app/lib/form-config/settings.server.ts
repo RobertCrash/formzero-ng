@@ -93,15 +93,28 @@ export async function savePolicyRequest({
       { status: 400 }
     )
   }
-  const containsSecretKey = (value: unknown): boolean => {
+  // Reject plaintext credential material by exact key name. Metadata such as
+  // secretSource / credentialId is schema-validated and must remain allowed.
+  const FORBIDDEN_CREDENTIAL_KEYS = new Set([
+    "secret",
+    "password",
+    "apiKey",
+    "api_key",
+    "turnstileSecret",
+    "smtpPassword",
+    "smtp_password",
+    "signingSecret",
+    "signing_secret",
+  ])
+  const containsForbiddenCredentialKey = (value: unknown): boolean => {
     if (!value || typeof value !== "object") return false
-    if (Array.isArray(value)) return value.some(containsSecretKey)
+    if (Array.isArray(value)) return value.some(containsForbiddenCredentialKey)
     return Object.entries(value).some(
       ([key, nested]) =>
-        /(?:secret|password)/i.test(key) || containsSecretKey(nested)
+        FORBIDDEN_CREDENTIAL_KEYS.has(key) || containsForbiddenCredentialKey(nested)
     )
   }
-  if (containsSecretKey(policy)) {
+  if (containsForbiddenCredentialKey(policy)) {
     return data(
       {
         success: false,

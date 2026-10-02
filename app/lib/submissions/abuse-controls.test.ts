@@ -21,6 +21,16 @@ describe("origin and redirect controls", () => {
       )
     ).toBe("https://site.example")
     expect(
+      resolveCorsHeaders(allowedRequest, policy.security).get(
+        "Access-Control-Allow-Methods"
+      )
+    ).toBe("POST, OPTIONS")
+    expect(
+      resolveCorsHeaders(allowedRequest, policy.security, ["PUT", "OPTIONS"]).get(
+        "Access-Control-Allow-Methods"
+      )
+    ).toBe("PUT, OPTIONS")
+    expect(
       resolveCorsHeaders(deniedRequest, policy.security).has(
         "Access-Control-Allow-Origin"
       )

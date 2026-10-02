@@ -6,7 +6,7 @@ import { SubmissionError } from "./errors"
 type TurnstileEnv = {
   DB: D1Database
   TURNSTILE_SECRET?: string
-  FORMZERO_ENCRYPTION_KEY?: string
+  FORMZERO_ENCRYPTION_KEY: string
 }
 
 type TurnstileResponse = {
@@ -32,7 +32,7 @@ async function resolveTurnstileSecret(config: CaptchaPolicy, env: TurnstileEnv) 
 
   const secret = await getSecret({
     db: env.DB,
-    encryptionKey: env.FORMZERO_ENCRYPTION_KEY!,
+    encryptionKey: env.FORMZERO_ENCRYPTION_KEY,
     // resolveCaptchaSecretSource returns "form" only with a credentialId set.
     secretId: (config as { credentialId: string }).credentialId,
   })

@@ -1,5 +1,3 @@
-import { countDeadLetteredDeliveries } from "../delivery/dead-letters.server"
-import { publishPendingDeliveryJobs } from "../delivery/publish-jobs.server"
 import {
   cleanupExpiredUploads,
   cleanupOrphanedTemporaryObjects,
@@ -7,6 +5,8 @@ import {
 } from "../uploads/cleanup-files.server"
 import { purgeDeletedForms } from "../uploads/delete-form.server"
 import { deleteSubmissionWithFiles } from "../uploads/delete-submission.server"
+import { countDeadLetteredDeliveries } from "../delivery/dead-letters.server"
+import { publishPendingDeliveryJobs } from "../delivery/publish-jobs.server"
 import {
   countExpiredSubmissions,
   deleteExpiredSubmissions,
@@ -53,6 +53,22 @@ type CategoryContext = {
 type Category = {
   name: MaintenanceCategory
   run: (context: CategoryContext) => Promise<CategoryOutcome>
+}
+
+/**
+ * Drain a category in repeated bounded batches until empty or out of time.
+ */
+async function drainBatches(
+  deadline: number,
+  step: () => Promise<number>
+): Promise<number> {
+  let processed = 0
+  while (Date.now() < deadline) {
+    const batch = await step()
+    processed += batch
+    if (batch < BATCH_LIMIT) break
+  }
+  return processed
 }
 
 const categories: Category[] = [
@@ -117,13 +133,15 @@ const categories: Category[] = [
   },
   {
     name: "expired_files",
-    async run({ env, now }) {
-      const processed = await cleanupExpiredUploads({
-        db: env.DB,
-        bucket: env.UPLOADS,
-        now,
-        limit: BATCH_LIMIT,
-      })
+    async run({ env, now, deadline }) {
+      const processed = await drainBatches(deadline, () =>
+        cleanupExpiredUploads({
+          db: env.DB,
+          bucket: env.UPLOADS,
+          now,
+          limit: BATCH_LIMIT,
+        })
+      )
       return { processed, backlog: await countExpiredUploads(env.DB, now) }
     },
   },
@@ -146,26 +164,29 @@ const categories: Category[] = [
   {
     name: "pending_deletes",
     async run({ env, deadline }) {
-      const pending = await env.DB
-        .prepare(`
-          SELECT id, form_id
-          FROM submissions
-          WHERE status = 'pending_delete'
-          LIMIT ?
-        `)
-        .bind(BATCH_LIMIT)
-        .all<{ id: string; form_id: string }>()
-      let processed = 0
-      for (const submission of pending.results) {
-        if (Date.now() >= deadline) break
-        await deleteSubmissionWithFiles({
-          db: env.DB,
-          bucket: env.UPLOADS,
-          formId: submission.form_id,
-          submissionId: submission.id,
-        })
-        processed++
-      }
+      const processed = await drainBatches(deadline, async () => {
+        const pending = await env.DB
+          .prepare(`
+            SELECT id, form_id
+            FROM submissions
+            WHERE status = 'pending_delete'
+            LIMIT ?
+          `)
+          .bind(BATCH_LIMIT)
+          .all<{ id: string; form_id: string }>()
+        let batch = 0
+        for (const submission of pending.results) {
+          if (Date.now() >= deadline) break
+          await deleteSubmissionWithFiles({
+            db: env.DB,
+            bucket: env.UPLOADS,
+            formId: submission.form_id,
+            submissionId: submission.id,
+          })
+          batch++
+        }
+        return batch
+      })
       const row = await env.DB
         .prepare(`
           SELECT COUNT(*) AS total
@@ -179,46 +200,51 @@ const categories: Category[] = [
   {
     name: "expired_submissions",
     async run({ env, now, deadline }) {
-      const processed = await deleteExpiredSubmissions(env.DB, env.UPLOADS, now, {
-        limit: BATCH_LIMIT,
-        deadline,
-      })
+      const processed = await drainBatches(deadline, () =>
+        deleteExpiredSubmissions(env.DB, env.UPLOADS, now, {
+          limit: BATCH_LIMIT,
+          deadline,
+        })
+      )
       return { processed, backlog: await countExpiredSubmissions(env.DB, now) }
     },
   },
   {
     name: "expired_exports",
     async run({ env, now, deadline }) {
-      const exports = await env.DB
-        .prepare(`
-          SELECT id, object_key
-          FROM export_jobs
-          WHERE expires_at IS NOT NULL
-            AND expires_at <= ?
-            AND object_key IS NOT NULL
-          LIMIT ?
-        `)
-        .bind(now, BATCH_LIMIT)
-        .all<{ id: string; object_key: string }>()
-      let processed = 0
-      for (const job of exports.results) {
-        if (Date.now() >= deadline) break
-        try {
-          await env.UPLOADS.delete(job.object_key)
-          await env.DB
-            .prepare(`
-              UPDATE export_jobs
-              SET status = 'expired', object_key = NULL
-              WHERE id = ?
-            `)
-            .bind(job.id)
-            .run()
-          processed++
-        } catch (error) {
-          // One unreachable object must not strand the rest of the page.
-          console.error("Failed to remove expired export:", job.id, error)
+      const processed = await drainBatches(deadline, async () => {
+        const exports = await env.DB
+          .prepare(`
+            SELECT id, object_key
+            FROM export_jobs
+            WHERE expires_at IS NOT NULL
+              AND expires_at <= ?
+              AND object_key IS NOT NULL
+            LIMIT ?
+          `)
+          .bind(now, BATCH_LIMIT)
+          .all<{ id: string; object_key: string }>()
+        let batch = 0
+        for (const job of exports.results) {
+          if (Date.now() >= deadline) break
+          try {
+            await env.UPLOADS.delete(job.object_key)
+            await env.DB
+              .prepare(`
+                UPDATE export_jobs
+                SET status = 'expired', object_key = NULL
+                WHERE id = ?
+              `)
+              .bind(job.id)
+              .run()
+            batch++
+          } catch (error) {
+            // One unreachable object must not strand the rest of the page.
+            console.error("Failed to remove expired export:", job.id, error)
+          }
         }
-      }
+        return batch
+      })
       const row = await env.DB
         .prepare(`
           SELECT COUNT(*) AS total
@@ -233,6 +259,14 @@ const categories: Category[] = [
     },
   },
 ]
+
+/** Rotate the start category daily so earlier ones cannot starve later ones. */
+export function rotateCategories<T>(list: T[], now: number): T[] {
+  if (list.length === 0) return list
+  const offset = Math.floor(now / 86_400_000) % list.length
+  if (offset === 0) return list
+  return [...list.slice(offset), ...list.slice(0, offset)]
+}
 
 export type MaintenanceReport = {
   ranFor: number
@@ -264,8 +298,9 @@ export async function runScheduledMaintenance(
   const deadline = startedAt + (options.budgetMs ?? DEFAULT_BUDGET_MS)
   const state = await loadMaintenanceState(env.DB)
   const report: MaintenanceReport["categories"] = []
+  const ordered = rotateCategories(categories, now)
 
-  for (const category of categories) {
+  for (const category of ordered) {
     if (Date.now() >= deadline) {
       // Left for the next run rather than started and cut off mid-write.
       report.push({

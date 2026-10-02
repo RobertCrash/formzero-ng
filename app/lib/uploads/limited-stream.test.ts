@@ -44,6 +44,30 @@ describe("createByteLimiter", () => {
   })
 })
 
+describe("limitAndHash", () => {
+  const hasDigestStream = Boolean(
+    (globalThis.crypto as Crypto & { DigestStream?: unknown }).DigestStream
+  )
+
+  it.skipIf(!hasDigestStream)(
+    "hashes while preserving the expected length for R2",
+    async () => {
+      const { limitAndHash } = await import("./limited-stream")
+      const source = streamOf("hello world")
+      const upload = limitAndHash(source, 100, 11)
+      const text = await drain(upload.body)
+      expect(text).toBe("hello world")
+      expect(upload.bytesRead()).toBe(11)
+      expect(await upload.checksum()).toMatch(/^[0-9a-f]{64}$/)
+    }
+  )
+
+  it("rejects an expected size above the byte limit before reading", async () => {
+    const { limitAndHash } = await import("./limited-stream")
+    expect(() => limitAndHash(streamOf("x"), 10, 11)).toThrow(ByteLimitExceededError)
+  })
+})
+
 describe("submission payload limit", () => {
   function jsonRequest(body: string, withContentLength: boolean) {
     const headers: Record<string, string> = { "Content-Type": "application/json" }

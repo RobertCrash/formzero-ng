@@ -48,23 +48,9 @@ export async function action({ request, params, context }: Route.ActionArgs) {
         { status: 400 }
       )
     }
-    const encryptionKey = context.cloudflare.env.FORMZERO_ENCRYPTION_KEY
-    if (!encryptionKey) {
-      return data(
-        {
-          success: false,
-          error:
-            "A form-owned Turnstile secret is stored encrypted, which needs " +
-            "FORMZERO_ENCRYPTION_KEY. Set it with `wrangler secret put " +
-            "FORMZERO_ENCRYPTION_KEY`, or use the account-wide TURNSTILE_SECRET " +
-            "instead.",
-        },
-        { status: 503 }
-      )
-    }
     newCredentialId = await putSecret({
       db: context.cloudflare.env.DB,
-      encryptionKey,
+      encryptionKey: context.cloudflare.env.FORMZERO_ENCRYPTION_KEY,
       formId: params.formId,
       purpose: "turnstile_secret",
       value: turnstileSecret,
@@ -259,19 +245,10 @@ export default function SecuritySettings() {
               <input
                 type="checkbox"
                 checked={captchaEnabled}
-                disabled={!capabilities.turnstile && !captchaEnabled}
                 onChange={(event) => setCaptchaEnabled(event.target.checked)}
               />
               Enable Cloudflare Turnstile
             </label>
-            {!capabilities.turnstile && (
-              <p className="text-sm text-muted-foreground">
-                Turnstile needs a secret. Set the account-wide{" "}
-                <code>TURNSTILE_SECRET</code>, or set{" "}
-                <code>FORMZERO_ENCRYPTION_KEY</code> so this form can store its
-                own.
-              </p>
-            )}
             {captchaEnabled && (
               <>
                 <Input
@@ -299,12 +276,9 @@ export default function SecuritySettings() {
                       name="secret_source"
                       value="form"
                       checked={secretSource === "form"}
-                      disabled={!capabilities.credentialEncryption}
                       onChange={() => setSecretSource("form")}
                     />
                     A secret stored for this form
-                    {!capabilities.credentialEncryption &&
-                      " (needs FORMZERO_ENCRYPTION_KEY)"}
                   </label>
                 </fieldset>
                 {secretSource === "form" && (

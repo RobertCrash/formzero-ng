@@ -9,7 +9,7 @@ type DeliveryEnv = {
   DB: D1Database
   EMAIL: SendEmail
   UPLOADS: R2Bucket
-  FORMZERO_ENCRYPTION_KEY?: string
+  FORMZERO_ENCRYPTION_KEY: string
   FORMZERO_PUBLIC_URL?: string
 }
 

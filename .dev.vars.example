@@ -1,13 +1,17 @@
 BETTER_AUTH_SECRET=""
 
-# Optional. Uncomment only the features you use in local development.
+# Required. Exactly 32 bytes as 64 hex characters (`openssl rand -hex 32`) or
+# base64. Encrypts stored credentials: custom SMTP passwords, per-form Turnstile
+# secrets, and webhook signing secrets. Changing it makes previously stored
+# credentials unreadable.
+FORMZERO_ENCRYPTION_KEY=""
 
-# Encrypts the credentials FormZero stores: custom SMTP passwords, per-form
-# Turnstile secrets, and webhook signing secrets. Each of those features is
-# unavailable without it. The default Cloudflare email transport stores no
-# credentials and does not need this key.
-# FORMZERO_ENCRYPTION_KEY=""
+# Required. Instance-wide HMAC secret for keyed hashes of request/privacy
+# metadata (client IP for rate-limit keys, and source_ip_hash when a form's IP
+# storage mode opts in). Not used for login credentials — Better Auth owns that.
+# Generate with `openssl rand -hex 32`.
+FORMZERO_HASH_SECRET=""
 
+# Optional.
 # FORMZERO_PUBLIC_URL="http://localhost:5173"
 # TURNSTILE_SECRET=""
-# IP_HASH_SECRET=""

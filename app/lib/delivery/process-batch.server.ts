@@ -4,14 +4,14 @@ export type DeliveryQueueMessage = {
   jobId: string
 }
 
-export const DELIVERY_QUEUE_NAME = "formzero-deliveries"
-export const DELIVERY_DLQ_NAME = "formzero-deliveries-dlq"
+export const DELIVERY_QUEUE_NAME = "formzero-ng-deliveries"
+export const DELIVERY_DLQ_NAME = "formzero-ng-deliveries-dlq"
 
 type BatchEnv = {
   DB: D1Database
   EMAIL: SendEmail
   UPLOADS: R2Bucket
-  FORMZERO_ENCRYPTION_KEY?: string
+  FORMZERO_ENCRYPTION_KEY: string
   FORMZERO_PUBLIC_URL?: string
 }
 

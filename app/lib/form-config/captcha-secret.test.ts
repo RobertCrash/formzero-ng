@@ -16,31 +16,25 @@ const enabled = (extra: Partial<Extract<CaptchaPolicy, { enabled: true }>> = {})
     ...extra,
   }) as CaptchaPolicy
 
-const key = "00".repeat(32)
-
 describe("Turnstile secret resolution", () => {
-  it("does not treat the encryption key as a Turnstile secret", () => {
-    const capabilities = getCapabilities({ FORMZERO_ENCRYPTION_KEY: key })
+  it("treats Turnstile as always available to configure", () => {
+    const capabilities = getCapabilities({})
     expect(capabilities.turnstileAccountSecret).toBe(false)
-    // The key still means a form *could* store its own secret.
     expect(capabilities.turnstile).toBe(true)
 
     const resolved = resolveCaptchaSecretSource(
       enabled({ secretSource: "form" }),
-      { FORMZERO_ENCRYPTION_KEY: key }
+      {}
     )
     expect(resolved.source).toBeNull()
   })
 
-  it("refuses to borrow the account secret for a form-owned credential", () => {
+  it("uses the form-owned credential when credentialId is set", () => {
     const resolved = resolveCaptchaSecretSource(
       enabled({ secretSource: "form", credentialId: "cred-1" }),
       { TURNSTILE_SECRET: "account-secret" }
     )
-    expect(resolved.source).toBeNull()
-    expect(resolved).toMatchObject({
-      reason: expect.stringContaining("FORMZERO_ENCRYPTION_KEY"),
-    })
+    expect(resolved.source).toBe("form")
   })
 
   it("reads a policy written before secretSource existed as using the account secret", () => {
@@ -48,9 +42,7 @@ describe("Turnstile secret resolution", () => {
       resolveCaptchaSecretSource(enabled(), { TURNSTILE_SECRET: "s" }).source
     ).toBe("account")
     expect(
-      resolveCaptchaSecretSource(enabled({ credentialId: "cred-1" }), {
-        FORMZERO_ENCRYPTION_KEY: key,
-      }).source
+      resolveCaptchaSecretSource(enabled({ credentialId: "cred-1" }), {}).source
     ).toBe("form")
   })
 
@@ -102,5 +94,27 @@ describe("policy validation", () => {
     expect(
       FormPolicyV1Schema.safeParse(policyWithCaptcha(enabled())).success
     ).toBe(true)
+  })
+
+  it("accepts rate limiting without a separate capability check", () => {
+    const policy = createDefaultFormPolicy()
+    policy.security.rateLimit = {
+      enabled: true,
+      profile: "standard",
+      key: "ip-and-form",
+    }
+    const { errors } = validatePolicyCapabilities(policy, {})
+    expect(errors).toEqual([])
+  })
+
+  it("allows secretSource in parsed policy JSON (not a credential value)", () => {
+    const policy = policyWithCaptcha(
+      enabled({ secretSource: "account" })
+    )
+    expect(FormPolicyV1Schema.safeParse(policy).success).toBe(true)
+    const { errors } = validatePolicyCapabilities(policy, {
+      TURNSTILE_SECRET: "s",
+    })
+    expect(errors).toEqual([])
   })
 })

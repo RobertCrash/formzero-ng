@@ -1,5 +1,5 @@
 {
-	"name": "formzero",
+	"name": "formzero-ng",
 	"private": true,
 	"type": "module",
 	"scripts": {
@@ -76,7 +76,10 @@
 				"description": "Required authentication secret. Generate a unique value with `openssl rand -hex 32` or a 256-bit hexadecimal value at [JWT Secrets](https://jwtsecrets.com/), and keep it unchanged across deployments."
 			},
 			"FORMZERO_ENCRYPTION_KEY": {
-				"description": "Optional encryption key for stored credentials: custom SMTP passwords, per-form Turnstile secrets, and webhook signing secrets. Exactly 32 bytes as 64 hexadecimal characters (`openssl rand -hex 32`) or base64. Not needed when email uses the built-in Cloudflare Email Service transport. Changing it makes previously stored credentials unreadable."
+				"description": "Required encryption key for stored credentials: custom SMTP passwords, per-form Turnstile secrets, and webhook signing secrets. Exactly 32 bytes as 64 hexadecimal characters (`openssl rand -hex 32`) or base64. Changing it makes previously stored credentials unreadable."
+			},
+			"FORMZERO_HASH_SECRET": {
+				"description": "Required HMAC secret for keyed hashes of request/privacy metadata (client IP for rate-limit keys and optional source_ip_hash storage). Generate with `openssl rand -hex 32`. Keep it unchanged across deployments so existing hashes remain comparable."
 			}
 		}
 	},

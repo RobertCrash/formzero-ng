@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { runScheduledMaintenance } from "./run-scheduled-maintenance.server"
+import {
+  rotateCategories,
+  runScheduledMaintenance,
+} from "./run-scheduled-maintenance.server"
 
 const mocks = vi.hoisted(() => ({
   publishPendingDeliveryJobs: vi.fn(),
@@ -11,10 +14,14 @@ const mocks = vi.hoisted(() => ({
   deleteExpiredSubmissions: vi.fn(),
   countExpiredSubmissions: vi.fn(),
   redactExpiredIps: vi.fn(),
+  countDeadLetteredDeliveries: vi.fn(),
 }))
 
 vi.mock("../delivery/publish-jobs.server", () => ({
   publishPendingDeliveryJobs: mocks.publishPendingDeliveryJobs,
+}))
+vi.mock("../delivery/dead-letters.server", () => ({
+  countDeadLetteredDeliveries: mocks.countDeadLetteredDeliveries,
 }))
 vi.mock("../uploads/cleanup-files.server", () => ({
   cleanupExpiredUploads: mocks.cleanupExpiredUploads,
@@ -71,6 +78,18 @@ function fakeEnv() {
   }
 }
 
+const FIXED_ORDER = [
+  "delivery_locks",
+  "delivery_publish",
+  "ip_redaction",
+  "deleted_forms",
+  "expired_files",
+  "orphaned_objects",
+  "pending_deletes",
+  "expired_submissions",
+  "expired_exports",
+] as const
+
 describe("runScheduledMaintenance", () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -85,6 +104,7 @@ describe("runScheduledMaintenance", () => {
     })
     mocks.deleteExpiredSubmissions.mockResolvedValue(0)
     mocks.countExpiredSubmissions.mockResolvedValue(0)
+    mocks.countDeadLetteredDeliveries.mockResolvedValue(0)
     mocks.purgeDeletedForms.mockResolvedValue({
       objectsRemoved: 0,
       formsRemoved: 0,
@@ -94,19 +114,10 @@ describe("runScheduledMaintenance", () => {
 
   it("runs every category and reports each one", async () => {
     const { env } = fakeEnv()
-    const report = await runScheduledMaintenance(env)
+    // now=0 keeps rotation offset at 0 so order matches the static list.
+    const report = await runScheduledMaintenance(env, { now: 0 })
 
-    expect(report.categories.map((entry) => entry.name)).toEqual([
-      "delivery_locks",
-      "delivery_publish",
-      "ip_redaction",
-      "deleted_forms",
-      "expired_files",
-      "orphaned_objects",
-      "pending_deletes",
-      "expired_submissions",
-      "expired_exports",
-    ])
+    expect(report.categories.map((entry) => entry.name)).toEqual([...FIXED_ORDER])
     expect(report.categories.every((entry) => entry.status === "completed")).toBe(true)
   })
 
@@ -114,7 +125,7 @@ describe("runScheduledMaintenance", () => {
     const { env } = fakeEnv()
     mocks.cleanupExpiredUploads.mockRejectedValue(new Error("R2 unavailable"))
 
-    const report = await runScheduledMaintenance(env)
+    const report = await runScheduledMaintenance(env, { now: 0 })
     const byName = new Map(report.categories.map((entry) => [entry.name, entry]))
 
     expect(byName.get("expired_files")).toMatchObject({
@@ -134,7 +145,7 @@ describe("runScheduledMaintenance", () => {
       truncated: true,
     })
 
-    const report = await runScheduledMaintenance(env)
+    const report = await runScheduledMaintenance(env, { now: 0 })
 
     expect(savedState).toContainEqual({
       category: "orphaned_objects",
@@ -153,7 +164,7 @@ describe("runScheduledMaintenance", () => {
     })
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
-    const report = await runScheduledMaintenance(env, { budgetMs: 1_000 })
+    const report = await runScheduledMaintenance(env, { now: 0, budgetMs: 1_000 })
     vi.useRealTimers()
 
     const skipped = report.categories.filter((entry) => entry.status === "skipped")
@@ -166,5 +177,29 @@ describe("runScheduledMaintenance", () => {
       "expired_submissions",
       "expired_exports",
     ])
+  })
+
+  it("drains expired submissions across multiple batches in one run", async () => {
+    const { env } = fakeEnv()
+    let remaining = 250
+    mocks.deleteExpiredSubmissions.mockImplementation(async () => {
+      const batch = Math.min(100, remaining)
+      remaining -= batch
+      return batch
+    })
+    mocks.countExpiredSubmissions.mockImplementation(async () => remaining)
+
+    const report = await runScheduledMaintenance(env, {
+      now: 0,
+      budgetMs: 60_000,
+    })
+    const entry = report.categories.find((item) => item.name === "expired_submissions")
+    expect(entry).toMatchObject({ processed: 250, backlog: 0, status: "completed" })
+    expect(mocks.deleteExpiredSubmissions).toHaveBeenCalledTimes(3)
+  })
+
+  it("rotates category start order by day", () => {
+    expect(rotateCategories(["a", "b", "c"], 0)).toEqual(["a", "b", "c"])
+    expect(rotateCategories(["a", "b", "c"], 86_400_000)).toEqual(["b", "c", "a"])
   })
 })

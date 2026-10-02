@@ -57,14 +57,12 @@ type SettingsDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   settings: Settings | null
-  credentialEncryption: boolean
 }
 
 export function SettingsDialog({
   open,
   onOpenChange,
   settings,
-  credentialEncryption,
 }: SettingsDialogProps) {
   const fetcher = useFetcher<{ success?: boolean; error?: string }>()
   const testFetcher = useFetcher<{
@@ -235,22 +233,12 @@ export function SettingsDialog({
                     <span>
                       Custom SMTP server
                       <span className="block text-muted-foreground">
-                        Sends through your own mail server. The password is stored
-                        encrypted, so <code>FORMZERO_ENCRYPTION_KEY</code> must be set.
+                        Sends through your own mail server. The password is
+                        stored encrypted.
                       </span>
                     </span>
                   </label>
                 </fieldset>
-
-                {transport === "smtp" && !credentialEncryption && (
-                  <p className="rounded border border-destructive/50 bg-destructive/5 p-3 text-sm text-destructive">
-                    <code>FORMZERO_ENCRYPTION_KEY</code> is not set, so an SMTP
-                    password cannot be stored. Run{" "}
-                    <code>openssl rand -hex 32 | npx wrangler secret put FORMZERO_ENCRYPTION_KEY</code>{" "}
-                    (or add it to <code>.dev.vars</code>), or use the Cloudflare Email
-                    Service transport.
-                  </p>
-                )}
 
                 <div className="space-y-2">
                   <Label htmlFor="from-address" className="flex items-center gap-2">

@@ -17,7 +17,10 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   })
 }
 
-const emptyField = (): FieldRule => ({
+type EditorField = FieldRule & { editorId: string }
+
+const emptyField = (): EditorField => ({
+  editorId: crypto.randomUUID(),
   name: "",
   label: "",
   type: "string",
@@ -25,11 +28,22 @@ const emptyField = (): FieldRule => ({
   trim: true,
 })
 
+function toEditorFields(fields: FieldRule[]): EditorField[] {
+  return structuredClone(fields).map((field) => ({
+    ...field,
+    editorId: crypto.randomUUID(),
+  }))
+}
+
+function withoutEditorIds(fields: EditorField[]): FieldRule[] {
+  return fields.map(({ editorId: _editorId, ...field }) => field)
+}
+
 export default function FieldSettings() {
   const { form } = useOutletContext<SettingsOutletContext>()
   const fetcher = useFetcher<{ success?: boolean; error?: string }>()
-  const [fields, setFields] = useState<FieldRule[]>(
-    () => structuredClone(form.policy.fields)
+  const [fields, setFields] = useState<EditorField[]>(() =>
+    toEditorFields(form.policy.fields)
   )
   const [rejectUnknown, setRejectUnknown] = useState(
     form.policy.request.rejectUnknownFields
@@ -55,7 +69,7 @@ export default function FieldSettings() {
 
   const policy = {
     ...form.policy,
-    fields,
+    fields: withoutEditorIds(fields),
     request: {
       ...form.policy.request,
       rejectUnknownFields: rejectUnknown,
@@ -71,7 +85,7 @@ export default function FieldSettings() {
         <div className="space-y-3">
           {fields.map((field, index) => (
             <div
-              key={`${index}-${field.name}`}
+              key={field.editorId}
               className="grid gap-2 rounded-md border p-3 md:grid-cols-12"
             >
               <Input
@@ -150,7 +164,11 @@ export default function FieldSettings() {
                   onClick={() =>
                     setFields((current) => [
                       ...current.slice(0, index + 1),
-                      { ...field, name: `${field.name}_copy` },
+                      {
+                        ...field,
+                        editorId: crypto.randomUUID(),
+                        name: `${field.name}_copy`,
+                      },
                       ...current.slice(index + 1),
                     ])
                   }

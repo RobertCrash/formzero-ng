@@ -11,7 +11,8 @@ export function resolveCorsHeaders(
   security: Pick<
     FormPolicyV1["security"],
     "allowedOrigins" | "allowMissingOrigin"
-  >
+  >,
+  allowedMethods: string[] = ["POST", "OPTIONS"]
 ) {
   const headers = new Headers({ Vary: "Origin" })
   const origin = request.headers.get("Origin")
@@ -26,7 +27,7 @@ export function resolveCorsHeaders(
       )
     if (allowed) {
       headers.set("Access-Control-Allow-Origin", origin)
-      headers.set("Access-Control-Allow-Methods", "POST, OPTIONS")
+      headers.set("Access-Control-Allow-Methods", allowedMethods.join(", "))
       headers.set("Access-Control-Allow-Headers", "Content-Type, Accept")
       headers.set("Access-Control-Max-Age", "86400")
     }

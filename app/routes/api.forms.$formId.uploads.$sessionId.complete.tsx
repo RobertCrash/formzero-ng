@@ -6,6 +6,17 @@ import {
   validateOrigin,
 } from "~/lib/submissions/validate-origin"
 
+export async function loader({ request, params, context }: Route.LoaderArgs) {
+  const form = await loadFormWithPolicy(context.cloudflare.env.DB, params.formId)
+  const headers = form
+    ? resolveCorsHeaders(request, form.policy.security)
+    : new Headers({ Vary: "Origin" })
+  return new Response(null, {
+    status: request.method === "OPTIONS" ? (form ? 204 : 404) : 405,
+    headers,
+  })
+}
+
 export async function action({ request, params, context }: Route.ActionArgs) {
   const form = await loadFormWithPolicy(context.cloudflare.env.DB, params.formId)
   if (!form) return data({ success: false, error: "Form not found." }, { status: 404 })

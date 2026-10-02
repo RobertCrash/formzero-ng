@@ -9,10 +9,15 @@ import { readFileSync } from "node:fs"
 import { parse, type ParseError } from "jsonc-parser"
 
 type WranglerConfig = {
-  d1_databases?: Array<{ binding?: string; database_id?: string }>
-  r2_buckets?: Array<{ binding?: string }>
+  name?: string
+  d1_databases?: Array<{
+    binding?: string
+    database_id?: string
+    database_name?: string
+  }>
+  r2_buckets?: Array<{ binding?: string; bucket_name?: string }>
   queues?: {
-    producers?: Array<{ binding?: string }>
+    producers?: Array<{ binding?: string; queue?: string }>
     consumers?: Array<{ queue?: string; dead_letter_queue?: string }>
   }
   ratelimits?: Array<{ name?: string }>
@@ -99,6 +104,52 @@ for (const entry of config.send_email ?? []) {
     failures.push(
       'send_email: "remote": true must not be committed. It routes local ' +
         "wrangler dev sends through the real Email Service."
+    )
+  }
+}
+
+const RESOURCE_PREFIX = "formzero-ng"
+if (config.name !== RESOURCE_PREFIX) {
+  failures.push(`name: expected "${RESOURCE_PREFIX}", got "${config.name ?? ""}"`)
+}
+for (const database of config.d1_databases ?? []) {
+  if (database.database_name && database.database_name !== RESOURCE_PREFIX) {
+    failures.push(
+      `d1_databases: database_name must be "${RESOURCE_PREFIX}", got ` +
+        `"${database.database_name}"`
+    )
+  }
+}
+for (const bucket of config.r2_buckets ?? []) {
+  if (bucket.bucket_name && !bucket.bucket_name.startsWith(`${RESOURCE_PREFIX}-`)) {
+    failures.push(
+      `r2_buckets: bucket_name "${bucket.bucket_name}" must start with ` +
+        `"${RESOURCE_PREFIX}-"`
+    )
+  }
+}
+for (const producer of config.queues?.producers ?? []) {
+  if (producer.queue && !producer.queue.startsWith(`${RESOURCE_PREFIX}-`)) {
+    failures.push(
+      `queues.producers: queue "${producer.queue}" must start with ` +
+        `"${RESOURCE_PREFIX}-"`
+    )
+  }
+}
+for (const consumer of config.queues?.consumers ?? []) {
+  if (consumer.queue && !consumer.queue.startsWith(`${RESOURCE_PREFIX}-`)) {
+    failures.push(
+      `queues.consumers: queue "${consumer.queue}" must start with ` +
+        `"${RESOURCE_PREFIX}-"`
+    )
+  }
+  if (
+    consumer.dead_letter_queue &&
+    !consumer.dead_letter_queue.startsWith(`${RESOURCE_PREFIX}-`)
+  ) {
+    failures.push(
+      `queues.consumers: dead_letter_queue "${consumer.dead_letter_queue}" ` +
+        `must start with "${RESOURCE_PREFIX}-"`
     )
   }
 }
